@@ -1,0 +1,72 @@
+name: Run Bot
+
+on:
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: 'Run duration (minutes, max 360)'
+        required: false
+        default: '360'
+  schedule:
+    # Chạy mỗi giờ (bot sẽ tự chơi đến khi timeout)
+    - cron: '0 * * * *'
+
+jobs:
+  run-bot:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install websocket-client
+
+      - name: Download PikaJieQi engine
+        run: |
+          echo "=== Downloading PikaJieQi from mistboard release ==="
+          curl -sL -o pikajieqi.tar.gz \
+            https://github.com/brianhliou/pikafish-jieqi-wasm/releases/download/mistboard-2026-09-20/pikajieqi-linux-x86-64.tar.gz
+          tar xzf pikajieqi.tar.gz PikaJieQi 2>/dev/null || true
+          chmod +x PikaJieQi
+          ls -la PikaJieQi
+          echo "=== Smoke test ==="
+          printf 'uci\nquit\n' | ./PikaJieQi | head -3
+
+      - name: Download pikafish.nnue
+        run: |
+          echo "=== Downloading pikafish.nnue ==="
+          curl -sL -o pikafish.nnue \
+            https://github.com/official-pikafish/Networks/releases/download/master-net/pikafish.nnue
+          ls -la pikafish.nnue
+
+      - name: Verify files
+        run: |
+          echo "=== Files in workspace ==="
+          ls -la cup_bot_flipchess.py ws_frame_dump.py PikaJieQi pikafish.nnue
+          echo "=== Python syntax check ==="
+          python3 -m py_compile cup_bot_flipchess.py && echo "OK"
+
+      - name: Run bot
+        env:
+          CARO_USER19: ${{ secrets.CARO_USER19 }}
+          CARO_PASSWD19: ${{ secrets.CARO_PASSWD19 }}
+        run: |
+          echo "=== Starting bot at $(date) ==="
+          python3 -u cup_bot_flipchess.py 2>&1 | grep -v "WS-CAPTURE\|hidden piece"
+          echo "=== Bot stopped at $(date) ==="
+
+      - name: Upload logs
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: bot-logs-${{ github.run_id }}
+          path: |
+            ws_capture/
+          retention-days: 7

@@ -1,0 +1,27 @@
+# Dependencies
+__pycache__/
+*.py[cod]
+*$py.class
+*.egg-info/
+.venv/
+venv/
+
+# Bot runtime artifacts
+ws_capture/
+*.log
+*.lock
+
+# Engine files (downloaded at runtime, not committed)
+PikaJieQi
+pikafish.nnue
+pikajieqi.tar.gz
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
