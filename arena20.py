@@ -91,7 +91,7 @@ BOT_USE_CREATE_TABLE = True
 BOT_MATCH_DURATION = '10'
 BOT_TURN_DURATION = '60'
 BOT_ACC_DURATION = '0'
-BOT_BLOCK_SOFTWARE = '0'
+BOT_BLOCK_SOFTWARE = '1'
 
 VN_TEN_DAU = [
     "Tuấn", "Minh", "Đức", "Hoàng", "Huy", "Hùng", "Dũng", "Cường", "Long", "Nam",
