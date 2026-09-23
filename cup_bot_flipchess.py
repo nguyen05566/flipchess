@@ -1,26 +1,36 @@
 """
-cup_bot_flipchess.py — Cờ Úp Bot dùng engine PikaJieQi build từ mistboard
-Source: https://github.com/brianhliou/pikafish-jieqi-wasm (release mistboard-2026-09-20)
+cup_bot_flipchess.py — Cờ Úp Bot dùng mainline Pikafish (level 8) từ mistboard
+Source: https://github.com/brianhliou/mistboard (engine tier: pikafish-xiangqi-level-8)
 
-Engine: PikaJieQi (C++ native, UCI protocol, không cần wine)
-Movetime: 2000ms (~2s/nước)
-Tự restart engine mỗi lượt (Jieqi không có isready reliable, dùng fork-and-think)
-BAG updates: gửi kèm moves list để Jieqi sync state
+Engine: Mainline Pikafish (C++ native, UCI protocol, không cần wine)
+  - Tier: pikafish-xiangqi-level-8 (mạnh nhất trong 8 level của mistboard)
+  - Node budget: 3,000,000 (strength anchor)
+  - Movetime: 4000ms (~4s/nước — latency ceiling)
+  - YÊU CẦU: file pikafish.nnue đặt cùng thư mục với binary
+  - Sử dụng `go nodes 3000000 movetime <ms>` thay vì `go infinite` + sleep
+
+[LOGIC MỚI]
+- BỎ logic "chuyển xu" / "tìm bàn" (send_quick_play, get_1k_to_5k_bet_objs)
+- Chỉ dùng logic "tạo bàn" (send_create_table) với mức cược cố định 5000 xu
+- Bot tự tạo bàn mới mỗi khi không ở trong ván, không dò/find bàn có sẵn
 
 [ĐẶC ĐIỂM]
-- Binary: PikaJieQi (download từ mistboard release, đặt cùng thư mục với file .py)
+- Binary: mainline Pikafish (download từ official-pikafish/Pikafish release)
 - KHÔNG gửi lệnh setflip (engine không hỗ trợ; bot tự track flip phía Python)
-- Có NNUE: dùng pikafish.nnue nếu file tồn tại bên cạnh binary
+- REQUIRES pikafish.nnue — mainline Pikafish không load được nếu thiếu net
 - ws_frame_dump.py: parse WS frame từ server, track reveal piece qua raw_face byte
   → bot biết true piece type của quân úp (lợi thế so với người chơi thường)
+- Move suffix (c3c4N) được strip trước khi gửi cho mainline Pikafish (engine
+  không hiểu cú pháp reveal của PikaJieQi fork, chỉ chấp nhận UCI chuẩn c3c4)
 
 [ĐÃ BỎ so với cup_bot_mistboard.py gốc]
 - Ally detection (is_family_bot): không né bạn cùng hệ thống
 - Anti-software handler (is_block_software_message): bỏ detection chặn software
 - Table tracking (ACTIVE_TABLES_FILE): bỏ hệ thống đăng ký bàn
+- Logic chuyển xu / dò bàn (send_quick_play, get_1k_to_5k_bet_objs): stub
 
 [BẢN NÀY] Bot KHÔNG tự kick/Thoát khi thua — luôn ở lại bàn và ready ván mới.
-Mức cược: 1000 xu (BOT_BET_XU = 1000)
+Mức cược: 5000 xu (BOT_BET_XU = 5000)
 """
 import struct
 import threading
@@ -116,17 +126,39 @@ TOKEN = 0
 GAME_ID = 'mystery_xiangqi'
 PLACE_PATH = 'Lobby.mystery_xiangqi.0'
 
-# === ENGINE CONFIG ===
-# Binary PikaJieQi build từ repo flipchess (third_party/Pikafish-jieqi-old/src/)
-# Đặt cùng thư mục với file .py, hoặc override qua env MISTBOARD_JIEQI_ENGINE
-PIKAJIEQI_BINARY_CANDIDATES = [
-    os.environ.get("MISTBOARD_JIEQI_ENGINE", os.path.join(
-        os.path.dirname(os.path.abspath(__file__)), "PikaJieQi"
-    )),
-    # Fallback tên cũ (nếu user đặt binary nhầm tên)
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "pikajieqi-mistboard"),
-    os.path.join(os.path.dirname(os.path.abspath(__file__)), "pikafish"),
+# === ENGINE CONFIG (mainline Pikafish — mistboard level 8) ===
+# Mainline Pikafish binary (không phải PikaJieQi fork). Engine tier trong mistboard:
+#   pikafish-xiangqi-level-8 = { nodes: 3_000_000, movetimeMs: 4_000 }
+# (xem apps/server/src/xiangqi-pikafish-engine.ts trong repo mistboard)
+#
+# Binary candidates theo thứ tự:
+#   1. MISTBOARD_PIKAFISH_XIANGQI_PATH (env override — matches mistboard convention)
+#   2. ./pikafish (cùng thư mục với file .py)
+#   3. ./pikafish_x86_64 (tên release official-pikafish/Pikafish trên Linux)
+#   4. /usr/local/bin/pikafish (system install)
+_SCRIPT_DIR = os.path.dirname(os.path.abspath(__file__))
+PIKAFISH_BINARY_CANDIDATES = [
+    p for p in [
+        os.environ.get("MISTBOARD_PIKAFISH_XIANGQI_PATH"),
+        os.path.join(_SCRIPT_DIR, "pikafish"),
+        os.path.join(_SCRIPT_DIR, "pikafish_x86_64"),
+        "/usr/local/bin/pikafish",
+        "/app/bin/pikafish",
+    ] if p
 ]
+# NNUE net — mainline Pikafish KHÔNG chạy được nếu thiếu net.
+# Override qua MISTBOARD_PIKAFISH_XIANGQI_NET, mặc định pikafish.nnue cùng thư mục.
+PIKAFISH_NNUE_CANDIDATES = [
+    p for p in [
+        os.environ.get("MISTBOARD_PIKAFISH_XIANGQI_NET"),
+        os.path.join(_SCRIPT_DIR, "pikafish.nnue"),
+        os.path.join(_SCRIPT_DIR, "..", "pikafish.nnue"),
+    ] if p
+]
+
+# Mistboard level 8 — sức mạnh tối đa trong 8 level (pikafish-xiangqi-level-8)
+PIKAFISH_LEVEL_8_NODES = 3_000_000      # node budget (strength anchor)
+PIKAFISH_LEVEL_8_MOVETIME_MS = 4_000     # movetime ceiling per move
 
 ENGINE_MULTIPV = 1
 MIN_MOVE_SECONDS = 3.0
@@ -140,8 +172,10 @@ KICK_MODE = "never"
 KICK_DELAY = 5.0
 SIT_ALONE_TIMEOUT = 300.0
 
-BOT_BET_XU = 20000
-BOT_USE_CREATE_TABLE = True
+# === TABLE CONFIG ===
+# Chỉ tạo bàn (CREATE_RULE) — KHÔNG dò/find bàn (QUICK_PLAY).
+# Mức cược cố định 5000 xu như user yêu cầu.
+BOT_BET_XU = 5000
 BOT_MATCH_DURATION = '5'
 BOT_TURN_DURATION = '30'
 BOT_ACC_DURATION = '0'
@@ -558,10 +592,20 @@ class VisibleBoard:
         return '/'.join(rows) + ' ' + self.side_to_move + ' - - 0 1'
 
 
-class FlipchessJieqiEngine:
+class MistboardPikafishLevel8Engine:
+    """Mainline Pikafish engine configured as mistboard's pikafish-xiangqi-level-8.
+
+    Mistboard tier config (apps/server/src/xiangqi-pikafish-engine.ts):
+        nodes: 3_000_000          # strength anchor
+        movetimeMs: 4_000          # latency ceiling per move
+    REQUIRES pikafish.nnue next to the binary — mainline Pikafish refuses to
+    run without an EvalFile. Use `go nodes 3000000 movetime T` (whichever binds
+    first); no Skill option is exposed by Pikafish mainline.
+    """
     def __init__(self):
         self.proc = None
         self.binary_path = None
+        self.nnue_path = None
         self.engine_lock = threading.Lock()
         self._readyok = False
         self._latest_bestmove = None
@@ -571,16 +615,24 @@ class FlipchessJieqiEngine:
         self._restart_count = 0
         self._stdout_lines = []
         self._lines_lock = threading.Lock()
-        for path in PIKAJIEQI_BINARY_CANDIDATES:
+        for path in PIKAFISH_BINARY_CANDIDATES:
             if os.path.isfile(path) and os.access(path, os.X_OK):
                 self.binary_path = path
                 break
         if not self.binary_path:
-            print(f"[ENGINE] ❌ Không tìm thấy PikaJieQi binary. Đã thử: {PIKAJIEQI_BINARY_CANDIDATES}")
+            print(f"[ENGINE] ❌ Không tìm thấy mainline Pikafish binary. Đã thử: {PIKAFISH_BINARY_CANDIDATES}")
             self.engine = False
             return
-        print(f"[ENGINE] 🎯 PikaJieQi (flipchess) = {self.binary_path}")
-
+        for path in PIKAFISH_NNUE_CANDIDATES:
+            if path and os.path.isfile(path):
+                self.nnue_path = path
+                break
+        if not self.nnue_path:
+            print(f"[ENGINE] ❌ Không tìm thấy pikafish.nnue. Mainline Pikafish yêu cầu NNUE net. Đã thử: {PIKAFISH_NNUE_CANDIDATES}")
+            self.engine = False
+            return
+        print(f"[ENGINE] 🎯 Pikafish (mistboard level 8) binary = {self.binary_path}")
+        print(f"[ENGINE] 🎯 Pikafish NNUE net = {self.nnue_path}")
         self._init_engine()
         self.engine = self.proc is not None
 
@@ -615,7 +667,7 @@ class FlipchessJieqiEngine:
                     if not line: break
                     line = line.strip()
                     if line:
-                        print(f"[PKJQ-DBG] {line}")
+                        print(f"[PK-DBG] {line}")
             except Exception:
                 pass
         threading.Thread(target=consume_stderr, args=(self.proc,), daemon=True).start()
@@ -651,17 +703,18 @@ class FlipchessJieqiEngine:
             print("[ENGINE] ❌ uciok timeout")
             self._kill()
             return
-        nnue_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "pikafish.nnue")
+        # Mainline Pikafish init sequence (matches mistboard xiangqi-pikafish-engine.ts):
+        # uci -> setoption EvalFile -> setoption Threads/Hash/MultiPV -> ucinewgame -> isready
         with self.engine_lock:
             try:
+                # EvalFile is REQUIRED — mainline Pikafish will refuse to evaluate
+                # positions without the net loaded.
+                self.proc.stdin.write(f"setoption name EvalFile value {self.nnue_path}\n")
                 _threads = max(1, min(2, (os.cpu_count() or 2) - 1))
                 self.proc.stdin.write(f"setoption name Threads value {_threads}\n")
                 self.proc.stdin.write("setoption name Hash value 128\n")
-                # Mistboard's pinned classical jieqi_old build does not require
-                # an NNUE file. Use it only when the optional net is present.
-                if os.path.isfile(nnue_path):
-                    self.proc.stdin.write(f"setoption name EvalFile value {nnue_path}\n")
                 self.proc.stdin.write("setoption name MultiPV value 1\n")
+                self.proc.stdin.write("ucinewgame\n")
                 self.proc.stdin.write("isready\n")
                 self.proc.stdin.flush()
             except Exception as e:
@@ -671,7 +724,7 @@ class FlipchessJieqiEngine:
             print("[ENGINE] ❌ readyok timeout")
             self._kill()
             return
-        print("[ENGINE] ✅ PikaJieQi (flipchess) ready")
+        print("[ENGINE] ✅ Pikafish (mistboard level 8) ready")
 
     def _wait_for_line(self, prefix, timeout=10):
         t0 = time.time()
@@ -711,27 +764,49 @@ class FlipchessJieqiEngine:
         self._init_engine()
         return self.alive()
 
-    def get_best_move(self, fen, moves, movetime_ms=2000, searchmoves=None):
+    @staticmethod
+    def _strip_move_suffix(moves):
+        """PikaJieQi fork accepts c3c4N (reveal suffix); mainline Pikafish only
+        accepts standard UCI c3c4. Strip any trailing alpha suffix before sending
+        the move list to the engine."""
+        out = []
+        for m in moves or []:
+            if not m or len(m) < 4:
+                continue
+            # take first 4 chars (a-i + digit + a-i + digit) — drops reveal suffix
+            out.append(m[:4])
+        return out
+
+    def get_best_move(self, fen, moves, movetime_ms=None, searchmoves=None):
         if not self.alive():
             if not self.restart():
                 return None
+        # Mistboard level 8 default: 4s movetime (PIKAFISH_LEVEL_8_MOVETIME_MS).
+        # Allow caller override but cap at the level 8 ceiling to preserve strength profile.
+        if movetime_ms is None or movetime_ms <= 0:
+            movetime_ms = PIKAFISH_LEVEL_8_MOVETIME_MS
+        movetime_ms = min(int(movetime_ms), PIKAFISH_LEVEL_8_MOVETIME_MS)
+        if movetime_ms < 200:
+            movetime_ms = 200
         self._latest_bestmove = None
         self._engine_searching = True
         with self._lines_lock:
             self._stdout_lines.clear()
         try:
-            # ★ Use "position startpos moves ..." — PikaJieQi's native format
-            # PikaJieQi auto-tracks BAG and dark piece reveals from move suffixes
-            # BAG updates correctly: c3c4N → N2→N1 in BAG
-            # Engine uses BAG for expected value calculation in flip_search
+            # Mainline Pikafish UCI: position startpos moves a1a2 b3b4 ...
+            # Move list must NOT contain reveal suffixes (c3c4N) — mainline Pikafish
+            # rejects them. Strip via _strip_move_suffix.
+            clean_moves = self._strip_move_suffix(moves)
             cmd = "position startpos"
-            if moves:
-                cmd += " moves " + " ".join(moves)
-            # ★ go infinite [searchmoves ...] — restrict search space if provided
-            # Used for opening strategy (3 nước đầu chỉ chọn xe/pháo)
-            go_cmd = "go infinite"
+            if clean_moves:
+                cmd += " moves " + " ".join(clean_moves)
+            # ★ `go nodes 3000000 movetime T` — same command shape as mistboard's
+            # xiangqi-pikafish-engine.ts xiangqiEngineMove(): node budget is the
+            # reproducible strength anchor, movetime is the latency ceiling. Both
+            # bounds apply (whichever fires first stops the search).
+            go_cmd = f"go nodes {PIKAFISH_LEVEL_8_NODES} movetime {movetime_ms}"
             if searchmoves:
-                sm_clean = [m for m in searchmoves if m and len(m) >= 4][:128]
+                sm_clean = self._strip_move_suffix(searchmoves)[:128]
                 if sm_clean:
                     go_cmd += " searchmoves " + " ".join(sm_clean)
             with self.engine_lock:
@@ -743,15 +818,10 @@ class FlipchessJieqiEngine:
             print(f"[ENGINE] Send error: {e}")
             self._engine_searching = False
             return None
-        time.sleep(movetime_ms / 1000.0)
-        try:
-            with self.engine_lock:
-                self.proc.stdin.write("stop\n")
-                self.proc.stdin.flush()
-        except Exception:
-            pass
+        # Engine self-stops on `go nodes … movetime …` — wait for bestmove up to
+        # movetime + 5s buffer (net spawn cost + search + bestmove emit).
         t0 = time.time()
-        timeout = 5.0
+        timeout = (movetime_ms / 1000.0) + 5.0
         while time.time() - t0 < timeout:
             if self._latest_bestmove:
                 self._engine_searching = False
@@ -772,9 +842,12 @@ class FlipchessJieqiEngine:
                 self._engine_searching = False
                 return None
             time.sleep(0.02)
-        print(f"[ENGINE] bestmove timeout after stop")
+        print(f"[ENGINE] bestmove timeout (movetime={movetime_ms}ms)")
         self._engine_searching = False
         return self._latest_bestmove
+
+# Backward-compat alias — keeps any external references working
+FlipchessJieqiEngine = MistboardPikafishLevel8Engine
 
 class JieqiCupBot:
     def __init__(self):
@@ -827,7 +900,7 @@ class JieqiCupBot:
         self._moves_len_at_turn_start = 0
         self._bot_move_count = 0  # ★ Track bot's move count for opening strategy
 
-        self.engine = FlipchessJieqiEngine()
+        self.engine = MistboardPikafishLevel8Engine()
         if not self.engine.engine:
             print("[BOT] ❌ Engine not ready — bot will not be able to think")
         else:
@@ -923,12 +996,9 @@ class JieqiCupBot:
         self.send_message("LIST_BET_AMT")
 
     def get_1k_to_5k_bet_objs(self):
-        if not self.bet_amts: return []
-        valid = [ba for ba in self.bet_amts if 1000 <= ba["value"] <= 5000]
-        if valid:
-            random.shuffle(valid)
-            return valid
-        return [self.bet_amts[0]] if self.bet_amts else []
+        # STUB: logic "tìm bàn"/"chuyển xu" đã bị bỏ theo yêu cầu user.
+        # Bot chỉ tạo bàn mới (send_create_table) với BOT_BET_XU cố định 5000 xu.
+        return []
 
     def leave_table(self):
         if self.board.is_playing:
@@ -978,14 +1048,9 @@ class JieqiCupBot:
         self.send_message("CREATE_RULE", bytes(data))
 
     def send_quick_play(self, room_id="", bet_amt_id=-1):
-        now = time.time()
-        if now - self._last_quick_play_time < self._QUICK_PLAY_INTERVAL:
-            return
-        self._last_quick_play_time = now
-        data = bytearray()
-        data.extend(self.conn.pack_ascii(room_id))
-        data.extend(self.conn.pack_byte(bet_amt_id))
-        self.send_message("QUICK_PLAY", bytes(data))
+        # STUB: logic "tìm bàn" (QUICK_PLAY) đã bị bỏ theo yêu cầu user.
+        # Bot chỉ dùng send_create_table để tự tạo bàn 5000 xu.
+        print("[STUB] send_quick_play đã bị vô hiệu — chỉ tạo bàn (CREATE_RULE)")
 
     def send_play(self, source_pos, target_pos):
         self._played_this_turn = True
@@ -1277,10 +1342,10 @@ class JieqiCupBot:
             print(f"[START] dark={len(self.board.dark_positions)} | "
                   f"my_slot={my_slot_id} | first={first_turn_slot_id} | "
                   f"flip={self.board.flip}")
-            # ★ KHÔNG gửi setflip — engine flipchess (PikaJieQi jieqi_old) không hỗ trợ
-            # lệnh này. Bot đã tự track flip phía Python qua XiangqiBoardTracker.detect_flip()
-            # và encode/decode UCI move theo flip đó. Engine tự xử lý dark piece state qua
-            # BAG field trong FEN và move suffixes (c3c4N) trong moves list.
+            # ★ KHÔNG gửi setflip — mainline Pikafish không hỗ trợ lệnh này.
+            # Bot đã tự track flip phía Python qua XiangqiBoardTracker.detect_flip()
+            # và encode/decode UCI move theo flip đó. Move suffix (c3c4N) được strip
+            # trước khi gửi cho mainline Pikafish (engine chỉ chấp nhận UCI chuẩn c3c4).
         except Exception as e:
             print(f"[START_MATCH ERROR] {e}")
             traceback.print_exc()
@@ -1531,7 +1596,8 @@ class JieqiCupBot:
         if remain < 4.0:
             print(f"[TURN] Sắp hết giờ (remain={remain:.1f}s) — bỏ lượt")
             return
-        movetime_ms = 3000
+        # Mistboard level 8 default movetime (4s) — engine sẽ cap tại ceiling này.
+        movetime_ms = PIKAFISH_LEVEL_8_MOVETIME_MS
         fen, moves = self.board.get_current_fen()
         print(f"[ENGINE-IN] FEN: {fen[:80]}...", flush=True)
         print(f"[ENGINE-IN] moves({len(moves)}), movetime={movetime_ms}ms, remain={remain:.1f}s",
@@ -1584,7 +1650,7 @@ class JieqiCupBot:
         threading.Thread(target=loop, daemon=True).start()
 
     def run(self):
-        print("[BOT] Khởi chạy cờ úp Jieqi v1.1 (stay-on-lose)...")
+        print("[BOT] Khởi chạy cờ úp Pikafish-L8 (mistboard) — chỉ tạo bàn 5000 xu...")
         while True:
             try:
                 now_ts = time.time()
@@ -1654,29 +1720,21 @@ class JieqiCupBot:
                     self._enter_fail_at = 0.0
                     self.leave_table()
 
+                # ★ Chỉ tạo bàn (CREATE_RULE) với mức cược cố định BOT_BET_XU (5000 xu).
+                # Logic "tìm bàn" (QUICK_PLAY) và logic "chuyển xu" (random bet trong range
+                # 1k-5k) đã bị bỏ theo yêu cầu user.
                 if (self.connected and self.logged_in and not self.in_game
                         and not self._joining_table):
                     now = time.time()
                     if now - self._last_quick_play_time >= self._QUICK_PLAY_INTERVAL:
                         if not self._bet_amts_loaded:
                             self.send_list_bet_amt()
-                        elif BOT_USE_CREATE_TABLE:
+                        else:
                             bid = (self._resolved_bet_id
                                    if self._resolved_bet_id is not None
                                    else self.resolve_bet_amt_id())
                             print(f"[CREATE] 🪑 Tạo bàn {BOT_BET_XU} xu (bet_id={bid})")
                             self.send_create_table(bet_amt_id=bid)
-                        else:
-                            valid_bets = self.get_1k_to_5k_bet_objs()
-                            if valid_bets:
-                                bet_obj = random.choice(valid_bets)
-                                room = random.choice(self.ROOM_LIST)
-                                print(f"[SEARCH] 🔍 Dò bàn {bet_obj['value']} xu phòng '{room}'")
-                                self.send_quick_play(room_id=room, bet_amt_id=bet_obj['id'])
-                                self._quick_play_attempts += 1
-                            else:
-                                self.send_create_table()
-                                self._quick_play_attempts = 0
                 time.sleep(1)
             except KeyboardInterrupt:
                 break
