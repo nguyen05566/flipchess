@@ -36,40 +36,73 @@ jobs:
 
       - name: Install dependencies
         run: |
-          pip install websocket-client
+          pip install websocket-client requests
 
-      - name: Download PikaJieQi engine
+      - name: Download mainline Pikafish binary
         run: |
-          echo "=== Downloading PikaJieQi from mistboard release ==="
-          curl -sL -o pikajieqi.tar.gz \
-            https://github.com/brianhliou/pikafish-jieqi-wasm/releases/download/mistboard-2026-09-20/pikajieqi-linux-x86-64.tar.gz
-          tar xzf pikajieqi.tar.gz PikaJieQi 2>/dev/null || true
-          chmod +x PikaJieQi
-          ls -la PikaJieQi
+          echo "=== Downloading mainline Pikafish (mistboard level 8 engine) ==="
+          # Mainline Pikafish release (official-pikafish/Pikafish).
+          # mistboard's pikafish-xiangqi-level-8 tier drives this binary via UCI:
+          #   nodes=3_000_000, movetimeMs=4_000, EvalFile=pikafish.nnue
+          # Thử các tag release phổ biến; fallback về latest.
+          set +e
+          for tag in pikafish-2025.1 v2025.1 2025.1 latest; do
+            url="https://github.com/official-pikafish/Pikafish/releases/download/${tag}/pikafish-x86-64.tar.gz"
+            echo "Trying: $url"
+            curl -fsL -o pikafish.tar.gz "$url" && break
+          done
+          set -e
+          test -s pikafish.tar.gz || { echo "❌ Download thất bại"; exit 1; }
+          mkdir -p pikafish-extract
+          tar -xzf pikafish.tar.gz -C pikafish-extract || true
+          # Tìm binary pikafish trong cây giải nén và copy vào workspace root
+          BIN_PATH=$(find pikafish-extract -name 'pikafish*' -type f -executable | head -1)
+          if [ -z "$BIN_PATH" ]; then
+            # Fallback: một số release để binary sẵn trong root, không trong subdir
+            BIN_PATH=$(find pikafish-extract -name 'pikafish*' -type f | head -1)
+          fi
+          if [ -z "$BIN_PATH" ]; then
+            echo "❌ Không tìm thấy binary pikafish trong archive"
+            ls -laR pikafish-extract | head -50
+            exit 1
+          fi
+          cp "$BIN_PATH" ./pikafish
+          chmod +x ./pikafish
+          ls -la ./pikafish
           echo "=== Smoke test ==="
-          printf 'uci\nquit\n' | ./PikaJieQi | head -3
+          printf 'uci\nquit\n' | ./pikafish | head -5
 
       - name: Download pikafish.nnue
         run: |
-          echo "=== Downloading pikafish.nnue ==="
+          echo "=== Downloading pikafish.nnue (REQUIRED by mainline Pikafish) ==="
+          # Mainline Pikafish REFUSES to evaluate without an EvalFile loaded.
+          # The official net is published at official-pikafish/Networks.
           curl -sL -o pikafish.nnue \
             https://github.com/official-pikafish/Networks/releases/download/master-net/pikafish.nnue
           ls -la pikafish.nnue
+          file pikafish.nnue | head -1
 
       - name: Verify files
         run: |
           echo "=== Files in workspace ==="
-          ls -la cup_bot_flipchess.py ws_frame_dump.py PikaJieQi pikafish.nnue
+          ls -la arena20.py pikafish pikafish.nnue
           echo "=== Python syntax check ==="
-          python3 -m py_compile cup_bot_flipchess.py && echo "OK"
+          python3 -m py_compile arena20.py && echo "OK"
 
-      - name: Run bot
+      - name: Run bot (arena20.py — cờ tướng, mainline Pikafish level 8)
         env:
-          CARO_USER19: ${{ secrets.CARO_USER19 }}
-          CARO_PASSWD19: ${{ secrets.CARO_PASSWD19 }}
+          ZARO3_USER: ${{ secrets.ZARO3_USER }}
+          ZARO3_PASSWD: ${{ secrets.ZARO3_PASSWD }}
+          # Engine path overrides (mistboard convention)
+          MISTBOARD_PIKAFISH_XIANGQI_PATH: ${{ github.workspace }}/pikafish
+          MISTBOARD_PIKAFISH_XIANGQI_NET: ${{ github.workspace }}/pikafish.nnue
         run: |
           echo "=== Starting bot at $(date) ==="
-          python3 -u cup_bot_flipchess.py 2>&1 | grep -v "WS-CAPTURE\|hidden piece"
+          echo "=== Bot: arena20.py (cờ tướng — xiangqi) ==="
+          echo "=== Engine: mainline Pikafish (mistboard pikafish-xiangqi-level-8) ==="
+          echo "=== Logic: chỉ tạo bàn 5000 xu (CREATE_RULE), KHÔNG dò/find bàn ==="
+          echo "=== Logic 'chuyển xu' (transfer_xu_sync) đã bị bỏ ==="
+          python3 -u arena20.py 2>&1 | grep -v "WS-CAPTURE\|hidden piece"
           echo "=== Bot stopped at $(date) ==="
 
       - name: Upload logs
