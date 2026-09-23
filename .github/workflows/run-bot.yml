@@ -37,50 +37,36 @@ jobs:
       - name: Install dependencies
         run: |
           pip install websocket-client requests
+          # 7-zip để giải nén archive Pikafish (release chính thức dùng .7z)
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full
 
-      - name: Download mainline Pikafish binary
+      - name: Download & extract mainline Pikafish binary
         run: |
           echo "=== Downloading mainline Pikafish (mistboard level 8 engine) ==="
-          # Mainline Pikafish release (official-pikafish/Pikafish).
+          # Mainline Pikafish release — tag format: Pikafish-YYYY-MM-DD
           # mistboard's pikafish-xiangqi-level-8 tier drives this binary via UCI:
           #   nodes=3_000_000, movetimeMs=4_000, EvalFile=pikafish.nnue
-          # Thử các tag release phổ biến; fallback về latest.
-          set +e
-          for tag in pikafish-2025.1 v2025.1 2025.1 latest; do
-            url="https://github.com/official-pikafish/Pikafish/releases/download/${tag}/pikafish-x86-64.tar.gz"
-            echo "Trying: $url"
-            curl -fsL -o pikafish.tar.gz "$url" && break
-          done
-          set -e
-          test -s pikafish.tar.gz || { echo "❌ Download thất bại"; exit 1; }
-          mkdir -p pikafish-extract
-          tar -xzf pikafish.tar.gz -C pikafish-extract || true
-          # Tìm binary pikafish trong cây giải nén và copy vào workspace root
-          BIN_PATH=$(find pikafish-extract -name 'pikafish*' -type f -executable | head -1)
-          if [ -z "$BIN_PATH" ]; then
-            # Fallback: một số release để binary sẵn trong root, không trong subdir
-            BIN_PATH=$(find pikafish-extract -name 'pikafish*' -type f | head -1)
-          fi
-          if [ -z "$BIN_PATH" ]; then
-            echo "❌ Không tìm thấy binary pikafish trong archive"
-            ls -laR pikafish-extract | head -50
-            exit 1
-          fi
-          cp "$BIN_PATH" ./pikafish
+          # Use Pikafish-2026-01-02 (same version mistboard references in
+          # xiangqi-pikafish-engine.ts pikafishXiangqiPath() dev fallback).
+          # Archive is .7z (NOT tar.gz), contains Linux binaries for many CPU
+          # architectures + pikafish.nnue at the root.
+          curl -fsL -o pikafish.7z \
+            https://github.com/official-pikafish/Pikafish/releases/download/Pikafish-2026-01-02/Pikafish.2026-01-02.7z
+          ls -la pikafish.7z
+          # Extract full archive into ./pikafish-extract
+          7z x pikafish.7z -opikafish-extract -y > /dev/null
+          # Show what binaries are available
+          echo "=== Linux binaries available ==="
+          ls -la pikafish-extract/Linux/
+          # Pick pikafish-avx2 (GitHub Actions ubuntu-latest runners support AVX2)
+          cp pikafish-extract/Linux/pikafish-avx2 ./pikafish
           chmod +x ./pikafish
-          ls -la ./pikafish
+          # NNUE is at the archive root
+          cp pikafish-extract/pikafish.nnue ./pikafish.nnue
+          ls -la ./pikafish ./pikafish.nnue
           echo "=== Smoke test ==="
           printf 'uci\nquit\n' | ./pikafish | head -5
-
-      - name: Download pikafish.nnue
-        run: |
-          echo "=== Downloading pikafish.nnue (REQUIRED by mainline Pikafish) ==="
-          # Mainline Pikafish REFUSES to evaluate without an EvalFile loaded.
-          # The official net is published at official-pikafish/Networks.
-          curl -sL -o pikafish.nnue \
-            https://github.com/official-pikafish/Networks/releases/download/master-net/pikafish.nnue
-          ls -la pikafish.nnue
-          file pikafish.nnue | head -1
 
       - name: Verify files
         run: |
