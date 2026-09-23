@@ -11,6 +11,16 @@ on:
     # Chạy mỗi giờ (bot sẽ tự chơi đến khi timeout)
     - cron: '0 * * * *'
 
+# =========================================================================
+# Cấu hình Concurrency chống chạy chồng lấn
+# - group: Gom tất cả các lượt run của workflow này (hoặc cùng branch) vào 1 nhóm.
+# - cancel-in-progress: true -> Khi có lượt run mới, lượt run cũ đang chạy sẽ bị HỦY NGAY.
+# (Nếu bạn muốn lượt run mới phải XẾP HÀNG CHỜ lượt run cũ kết thúc thì đổi thành `cancel-in-progress: false`)
+# =========================================================================
+concurrency:
+  group: bot-execution-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   run-bot:
     runs-on: ubuntu-latest
