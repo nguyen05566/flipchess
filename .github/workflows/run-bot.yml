@@ -38,49 +38,28 @@ jobs:
         run: |
           pip install websocket-client
 
-      - name: Download mainline Pikafish binary
+      - name: Download PikaJieQi engine
         run: |
-          echo "=== Downloading mainline Pikafish (mistboard level 8 engine) ==="
-          # Mainline Pikafish release (official-pikafish/Pikafish).
-          # mistboard's pikafish-xiangqi-level-8 tier drives this binary via UCI:
-          #   nodes=3_000_000, movetimeMs=4_000, EvalFile=pikafish.nnue
-          curl -sL -o pikafish.tar.gz \
-            https://github.com/official-pikafish/Pikafish/releases/download/v2025.1/pikafish-x86-64.tar.gz \
-            || curl -sL -o pikafish.tar.gz \
-            https://github.com/official-pikafish/Pikafish/releases/latest/download/pikafish-x86-64.tar.gz
-          mkdir -p pikafish-extract
-          tar -xzf pikafish.tar.gz -C pikafish-extract || true
-          # Tìm binary pikafish trong cây giải nén và copy vào workspace root
-          BIN_PATH=$(find pikafish-extract -name 'pikafish*' -type f -executable | head -1)
-          if [ -z "$BIN_PATH" ]; then
-            # Fallback: một số release để binary sẵn trong root, không trong subdir
-            BIN_PATH=$(find pikafish-extract -name 'pikafish*' -type f | head -1)
-          fi
-          if [ -z "$BIN_PATH" ]; then
-            echo "❌ Không tìm thấy binary pikafish trong archive"
-            ls -laR pikafish-extract | head -50
-            exit 1
-          fi
-          cp "$BIN_PATH" ./pikafish
-          chmod +x ./pikafish
-          ls -la ./pikafish
+          echo "=== Downloading PikaJieQi from mistboard release ==="
+          curl -sL -o pikajieqi.tar.gz \
+            https://github.com/brianhliou/pikafish-jieqi-wasm/releases/download/mistboard-2026-09-20/pikajieqi-linux-x86-64.tar.gz
+          tar xzf pikajieqi.tar.gz PikaJieQi 2>/dev/null || true
+          chmod +x PikaJieQi
+          ls -la PikaJieQi
           echo "=== Smoke test ==="
-          printf 'uci\nquit\n' | ./pikafish | head -5
+          printf 'uci\nquit\n' | ./PikaJieQi | head -3
 
       - name: Download pikafish.nnue
         run: |
-          echo "=== Downloading pikafish.nnue (REQUIRED by mainline Pikafish) ==="
-          # Mainline Pikafish REFUSES to evaluate without an EvalFile loaded.
-          # The official net is published at official-pikafish/Networks.
+          echo "=== Downloading pikafish.nnue ==="
           curl -sL -o pikafish.nnue \
             https://github.com/official-pikafish/Networks/releases/download/master-net/pikafish.nnue
           ls -la pikafish.nnue
-          file pikafish.nnue | head -1
 
       - name: Verify files
         run: |
           echo "=== Files in workspace ==="
-          ls -la cup_bot_flipchess.py ws_frame_dump.py pikafish pikafish.nnue
+          ls -la cup_bot_flipchess.py ws_frame_dump.py PikaJieQi pikafish.nnue
           echo "=== Python syntax check ==="
           python3 -m py_compile cup_bot_flipchess.py && echo "OK"
 
@@ -88,13 +67,8 @@ jobs:
         env:
           CARO_USER19: ${{ secrets.CARO_USER19 }}
           CARO_PASSWD19: ${{ secrets.CARO_PASSWD19 }}
-          # Optional engine path overrides (mistboard convention)
-          MISTBOARD_PIKAFISH_XIANGQI_PATH: ${{ github.workspace }}/pikafish
-          MISTBOARD_PIKAFISH_XIANGQI_NET: ${{ github.workspace }}/pikafish.nnue
         run: |
           echo "=== Starting bot at $(date) ==="
-          echo "=== Engine: mainline Pikafish (mistboard pikafish-xiangqi-level-8) ==="
-          echo "=== Logic: chỉ tạo bàn 5000 xu (CREATE_RULE), KHÔNG dò/find bàn ==="
           python3 -u cup_bot_flipchess.py 2>&1 | grep -v "WS-CAPTURE\|hidden piece"
           echo "=== Bot stopped at $(date) ==="
 
