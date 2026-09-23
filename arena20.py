@@ -93,7 +93,7 @@ BOT_USE_CREATE_TABLE = True
 BOT_MATCH_DURATION = '10'
 BOT_TURN_DURATION = '60'
 BOT_ACC_DURATION = '0'
-BOT_BLOCK_SOFTWARE = '1'
+BOT_BLOCK_SOFTWARE = '0'
 
 # ★ THỜI GIAN CHỜ TRONG BÀN trước khi rời tạo bàn mới (theo yêu cầu user = 5 phút).
 # Áp dụng cho cả 2 case: (1) đang ngồi trong bàn mà không có đối thủ, (2) sau khi
