@@ -56,11 +56,13 @@ TOKEN = 0
 GAME_ID = 'xiangqi'
 PLACE_PATH = 'Lobby.xiangqi.0'
 
-# Số nhánh engine phân tích song song. MultiPV=1: chỉ tin nước tốt nhất của engine
-# (mạnh nhất & nhanh nhất). MultiPV>1: bật thêm lớp lọc xu hướng TrendAnalyzer.
-# Mistboard level 8 mặc định MultiPV=1; bot giữ MultiPV=3 để TrendAnalyzer hoạt động,
-# nhưng dùng cùng node budget + movetime ceiling của level 8.
-ENGINE_MULTIPV = 3
+# Số nhánh engine phân tích song song. Mistboard level 8 chuẩn dùng MultiPV=1
+# (mặc định của Pikafish khi không set option). TrendAnalyzer chỉ hoạt động với
+# MultiPV>1, nhưng user yêu cầu MultiPV=1 đúng chuẩn mistboard level 8.
+# Khi MultiPV=1, logic _get_move_avoiding_fixed sẽ không chọn được nước thay thế
+# (TrendAnalyzer chỉ có 1 line) -> bot đi bestmove của engine dù có dính chốt liệt.
+# Điều này an toàn vì bestmove là nước tối ưu, không gây khả năng bị phát hiện.
+ENGINE_MULTIPV = 1
 
 # === MISTBOARD LEVEL 8 CONFIG (pikafish-xiangqi-level-8) ===
 # Cấu hình sức mạnh theo mistboard xiangqi-pikafish-engine.ts:
@@ -84,7 +86,7 @@ MIN_MOVE_SECONDS = 2.0
 KICK_MODE = "when_lose"
 KICK_DELAY = 5.0
 
-BOT_BET_XU = 5000
+BOT_BET_XU = 50000
 # Chỉ tạo bàn (CREATE_RULE) — KHÔNG dò/find bàn (QUICK_PLAY).
 # Logic 'chuyển xu' (transfer_xu_sync) đã bị bỏ theo yêu cầu user.
 BOT_USE_CREATE_TABLE = True
@@ -92,6 +94,12 @@ BOT_MATCH_DURATION = '10'
 BOT_TURN_DURATION = '60'
 BOT_ACC_DURATION = '0'
 BOT_BLOCK_SOFTWARE = '1'
+
+# ★ THỜI GIAN CHỜ TRONG BÀN trước khi rời tạo bàn mới (theo yêu cầu user = 5 phút).
+# Áp dụng cho cả 2 case: (1) đang ngồi trong bàn mà không có đối thủ, (2) sau khi
+# ENTER_PLACE bị lỗi mà vẫn chưa vào được ván nào.
+SIT_ALONE_TIMEOUT = 300.0       # 5 phút = 300 giây
+ENTER_FAIL_TIMEOUT = 300.0     # 5 phút = 300 giây
 
 VN_TEN_DAU = [
     "Tuấn", "Minh", "Đức", "Hoàng", "Huy", "Hùng", "Dũng", "Cường", "Long", "Nam",
@@ -1574,7 +1582,9 @@ class PikafishBot:
 
     def run(self):
         print("[BOT] Khởi chạy hệ thống giám sát tự động...")
-        print("[BOT] ⚙️ Engine: mainline Pikafish (mistboard level 8) — chỉ tạo bàn 5000 xu")
+        print(f"[BOT] ⚙️ Engine: mainline Pikafish (mistboard level 8, MultiPV={ENGINE_MULTIPV})")
+        print(f"[BOT] 🪑 Mức cược cố định: {BOT_BET_XU} xu — chỉ tạo bàn, KHÔNG dò/find bàn")
+        print(f"[BOT] ⏱️ Chờ trong bàn {int(SIT_ALONE_TIMEOUT)}s trước khi rời tạo bàn mới")
 
         # ★ LOGIC "CHUYỂN XU" (transfer_xu_sync) ĐÃ BỊ BỎ THEO YÊU CẦU USER.
         # Trước đây bot chuyển 50% xu cho tài khoản khác ngay khi khởi động —
@@ -1635,7 +1645,9 @@ class PikafishBot:
                 if self.board.is_playing:
                     self._sit_alone_since = None
                 else:
-                    # Chỉ đếm 30s khi ĐANG Ở TRONG BÀN nhưng KHÔNG TRONG VÁN ĐẤU
+                    # ★ Đếm ngược SIT_ALONE_TIMEOUT (5 phút) khi ĐANG Ở TRONG BÀN
+                    # nhưng KHÔNG TRONG VÁN ĐẤU. Trước đây là 30s, user yêu cầu tăng lên 5 phút
+                    # để bot không bị đá bàn liên tục khi đối thủ chậm vào.
                     if self.in_game and not self._joining_table:
                         opp_id = self.opponent_player_id()
                         if opp_id is None:
@@ -1643,21 +1655,22 @@ class PikafishBot:
                                 self._sit_alone_since = time.time()
                             else:
                                 elapsed = time.time() - self._sit_alone_since
-                                if elapsed >= 30.0:
-                                    print(f"[TABLE] ⏱️ Đã chờ {int(elapsed)}s không có người chơi -> Rời bàn tiếp tục tìm bàn 1000-10k")
+                                if elapsed >= SIT_ALONE_TIMEOUT:
+                                    print(f"[TABLE] ⏱️ Đã chờ {int(elapsed)}s không có người chơi -> Rời bàn tạo bàn mới {BOT_BET_XU} xu")
                                     self.leave_table()
                         else:
                             self._sit_alone_since = None
 
-                # Sau ENTER_PLACE lỗi: nếu 60s trôi qua mà không vào ván nào thì
-                # có lẽ bot KHÔNG thực sự ở trong bàn -> nhả cờ để rời bàn, tìm lại.
+                # ★ Sau ENTER_PLACE lỗi: đếm ngược ENTER_FAIL_TIMEOUT (5 phút) trước khi
+                # bỏ bàn cũ. Trước đây là 60s, user yêu cầu tăng lên 5 phút để tránh bị
+                # rời bàn oan khi server chậm confirm.
                 if (self._enter_fail_at and self.in_game and not self.board.is_playing
-                        and time.time() - self._enter_fail_at > 60):
-                    print("[TABLE] Chờ 60s không vào được ván nào -> bỏ bàn cũ, tìm bàn mới")
+                        and time.time() - self._enter_fail_at > ENTER_FAIL_TIMEOUT):
+                    print(f"[TABLE] Chờ {int(ENTER_FAIL_TIMEOUT)}s không vào được ván nào -> bỏ bàn cũ, tạo bàn mới")
                     self._enter_fail_at = 0.0
                     self.leave_table()
 
-                # ★ Chỉ tạo bàn (CREATE_RULE) với mức cược cố định BOT_BET_XU (5000 xu).
+                # ★ Chỉ tạo bàn (CREATE_RULE) với mức cược cố định BOT_BET_XU (50000 xu).
                 # Logic "tìm bàn" (QUICK_PLAY) và logic "chuyển xu" đã bị bỏ.
                 if (self.connected and self.logged_in and not self.in_game
                         and not self._joining_table):
