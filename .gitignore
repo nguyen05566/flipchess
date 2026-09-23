@@ -13,8 +13,13 @@ ws_capture/
 
 # Engine files (downloaded at runtime, not committed)
 PikaJieQi
+pikafish
+pikafish_*
 pikafish.nnue
+pikafish.7z
+pikafish.tar.gz
 pikajieqi.tar.gz
+pikafish-extract/
 
 # OS
 .DS_Store
