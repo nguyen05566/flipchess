@@ -1037,7 +1037,7 @@ class PikafishBot:
 
     def resolve_bet_amt_id(self):
         if not self.bet_amts: return None
-        in_range = [ba for ba in self.bet_amts if 1000 <= ba["value"] <= 10000]
+        in_range = [ba for ba in self.bet_amts if 5000 <= ba["value"] <= 10000]
         if in_range:
             return random.choice(in_range)['id']
         return 0
