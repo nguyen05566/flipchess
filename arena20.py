@@ -93,11 +93,11 @@ KICK_DELAY = 5.0
 
 # ==================== TÌM BÀN / TẠO BÀN ====================
 # ★ CHỈ DÒ 4 MỨC CƯỢC NÀY — KHÔNG TẠO BÀN, KHÔNG HẠ CƯỢC
-ALLOWED_BET_VALUES = (10000, 20000, 50000, 100000)
+ALLOWED_BET_VALUES = (2000,5000,10000, 20000, 50000, 100000)
 
 BET_MIN = min(ALLOWED_BET_VALUES)   # 10000
 BET_MAX = max(ALLOWED_BET_VALUES)   # 100000
-BOT_BET_XU = 10000                  # chỉ để tham chiếu/log, KHÔNG tạo bàn
+BOT_BET_XU = 5000                  # chỉ để tham chiếu/log, KHÔNG tạo bàn
 
 QUICK_PLAY_MAX_ATTEMPTS = 8         # 8 lần/lobby (xoay 4 bet × 2 room)
 BOT_USE_CREATE_TABLE = False        # ★ KHÔNG BAO GIỜ TẠO BÀN
