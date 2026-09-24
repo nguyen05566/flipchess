@@ -9,33 +9,24 @@ Engine tier: pikafish-xiangqi-level-8 (mistboard)
   - REQUIRES pikafish.nnue (EvalFile)
 Source: https://github.com/brianhliou/mistboard (apps/server/src/xiangqi-pikafish-engine.ts)
 
-★ PATCH v5 (sửa lỗi BOT ĐƠ sau vài chục nước ở bàn CHỐT LIỆT):
-  - Lỗi #1: _generate_legal_non_fixed_moves sinh nước với HÀNG BỊ LẬT (dùng row
-    của lưới FEN thay vì rank = 9-row) -> nước gửi lên server luôn sai/lệch bàn.
-    Đồng thời ô nhận diện chốt liệt cũng nhầm hàng -> có khi vẫn sinh nước đi từ chốt liệt.
-  - Lỗi #2: _score_single_move tìm trên thế cờ SAU nước thử (tới lượt đối phương)
-    làm TrendAnalyzer chứa PV CỦA ĐỐI PHƯƠNG, rồi _do_auto_move lại dùng nó để
-    THAY THẾ nước đã chọn -> gửi nước rác.
-  - Lỗi #3: cơ chế tự phục hồi quá yếu: _played_this_turn=True khi GỬI (kể cả khi
-    server từ chối) làm watchdog 12s bị vô hiệu; _handle_play_response chỉ thử lại
-    3 lần và KHÔNG loại nước bị từ chối -> lần nào engine cũng đề xuất đúng nước đó
-    -> chết đứng hoàn toàn.
-  - Sửa: tọa độ sinh nước đúng rank, vô hiệu hóa trend cache khi chấm điểm fallback,
-    danh sách _banned_moves (nước bị server từ chối sẽ bị loại vĩnh viễn trong ván),
-    watchdog tự phục hồi sau khi bị từ chối.
-  - PATCH v5.1 (đúng luật liệt chốt): chốt liệt = chốt đã tiến lên rồi bất động;
-    KHÔNG quân nào được ăn nó và nó cũng không được ăn ai -> FIXED_PAWN_NO_CAPTURE=True,
-    mọi nước có ô ĐÍCH là chốt liệt đều bị loại (engine vốn coi nó là "quân free" và
-    sẽ tìm cách ăn suốt ván -> đây chính là lý do dính lỗi sau vài chục nước).
+★ PATCH v6 (CHỈ TÌM BÀN — KHÔNG TẠO BÀN, 4 MỨC CƯỢC CỐ ĐỊNH):
+  - CHỈ dò bàn ở 4 mức cược: 10.000 / 20.000 / 50.000 / 100.000 xu.
+  - TUYỆT ĐỐI KHÔNG tạo bàn (send_create_table bị vô hiệu hóa).
+  - KHÔNG hạ cược khi thua / gặp bot đồng đội -> chỉ reset bộ đếm dò bàn.
+  - Chiến lược dò: 8 lần/lobby × 8 lobby (xoay 4 bet × 2 room mỗi lobby),
+    hết 8 lobby thì quay lại lobby đầu dò vòng mới.
 
-★ PATCH v4 (hoàn chỉnh):
-  - Cơ chế DÒ BÀN XUYÊN 8 LOBBY:
-      • Mỗi lobby dò tối đa 8 lần QUICK_PLAY (xoay vòng room 0-3 × bet [5000,10000]).
-      • Hết 8 lần ở lobby hiện tại -> ENTER_PLACE sang lobby kế tiếp.
-      • Xoay hết cả 8 lobby vẫn không thấy bàn -> fallback CREATE_RULE 5000 xu.
-  - Cơ chế CHỐT LIỆT: bình thường MultiPV=1 + movetime 4s (mistboard level 8);
-    khi bàn có chốt liệt thì tạm bật MultiPV=3 + movetime 3s, quét PV, sinh
-    nước hợp lệ từ FEN và chấm điểm — bot KHÔNG BAO GIỜ đứng hình.
+★ PATCH v5.1 (đúng luật liệt chốt):
+  - Chốt liệt = chốt đã tiến lên rồi bất động; KHÔNG quân nào được ăn nó
+    và nó cũng không được ăn ai -> FIXED_PAWN_NO_CAPTURE=True.
+
+★ PATCH v5:
+  - Sửa lỗi sinh nước sai hàng, lỗi TrendAnalyzer chứa PV đối phương,
+    thêm _banned_moves (nước bị server từ chối sẽ bị loại vĩnh viễn trong ván),
+    watchdog tự phục hồi sau khi bị từ chối.
+
+★ PATCH v4:
+  - Cơ chế DÒ BÀN XUYÊN 8 LOBBY, cơ chế CHỐT LIỆT (MultiPV=3-4 + fallback).
 """
 
 import struct
@@ -87,11 +78,9 @@ _lobby_idx = 0
 PLACE_PATH = LOBBY_LIST[_lobby_idx]
 
 # ==================== ENGINE CONFIG ====================
-ENGINE_MULTIPV = 1                        # bình thường
-ENGINE_MULTIPV_FIXED_PAWN = 4             # khi có chốt liệt (nhiều PV hơn = nhiều phương án thay thế hơn)
-# Luật CHỐT LIỆT (gamevh): mỗi bên có 1 con chốt đã tiến lên rồi BẤT ĐỘNG suốt ván.
-# Quân khác KHÔNG được ăn nó, và nó cũng không được ăn ai (vì bất động).
-FIXED_PAWN_NO_CAPTURE = True              # cấm mọi nước ĂN chốt liệt (cả 2 chiều)
+ENGINE_MULTIPV = 1
+ENGINE_MULTIPV_FIXED_PAWN = 4
+FIXED_PAWN_NO_CAPTURE = True
 
 PIKAFISH_LEVEL_8_NODES = 3_000_000
 PIKAFISH_LEVEL_8_MOVETIME_MS = 4_000
@@ -103,11 +92,15 @@ KICK_MODE = "when_lose"
 KICK_DELAY = 5.0
 
 # ==================== TÌM BÀN / TẠO BÀN ====================
-BET_MIN = 10000
-BET_MAX = 100000
-BOT_BET_XU = 10000
-QUICK_PLAY_MAX_ATTEMPTS = 8               # dò tối đa 8 lần MỖI lobby
-BOT_USE_CREATE_TABLE = False
+# ★ CHỈ DÒ 4 MỨC CƯỢC NÀY — KHÔNG TẠO BÀN, KHÔNG HẠ CƯỢC
+ALLOWED_BET_VALUES = (10000, 20000, 50000, 100000)
+
+BET_MIN = min(ALLOWED_BET_VALUES)   # 10000
+BET_MAX = max(ALLOWED_BET_VALUES)   # 100000
+BOT_BET_XU = 10000                  # chỉ để tham chiếu/log, KHÔNG tạo bàn
+
+QUICK_PLAY_MAX_ATTEMPTS = 8         # 8 lần/lobby (xoay 4 bet × 2 room)
+BOT_USE_CREATE_TABLE = False        # ★ KHÔNG BAO GIỜ TẠO BÀN
 
 BOT_MATCH_DURATION = '5'
 BOT_TURN_DURATION = '60'
@@ -333,7 +326,6 @@ def fetch_session_info():
 
         pm = re.search(r"var\s+placePath\s*=\s*[\"']([^\"']+)[\"']", page_html)
         if pm:
-            # Server trả về lobby mặc định; nhưng bot dùng LOBBY_LIST của mình.
             pass
 
         COOKIE = "; ".join(f"{k}={v}" for k, v in session.cookies.items())
@@ -523,7 +515,7 @@ class XiangqiBoardTracker:
 class TrendAnalyzer:
     def __init__(self):
         self.pv_ram_cache = {}
-        self.enabled = True                  # ★ False khi chấm điểm fallback (chặn PV đối phương lọt cache)
+        self.enabled = True
         self.info_regex = re.compile(r"info .* score cp (-?\d+) .* pv (.+)")
         self.mate_regex = re.compile(r"info .* score mate (-?\d+) .* pv (.+)")
 
@@ -611,9 +603,7 @@ class PikafishBot:
         self._search_room_idx = _offset % len(self.ROOM_LIST)
         self._search_bet_idx = 0
         self._quick_play_attempts = 0
-        # ★ Chỉ số lobby hiện tại (0..7)
         self._current_lobby_idx = _offset % len(LOBBY_LIST)
-        # ★ Số lobby đã dò hết 8 lần trong chu kỳ này
         self._lobbies_tried = 0
         self._sit_alone_since = None
         self._table_created_by_me = False
@@ -635,7 +625,7 @@ class PikafishBot:
         self._reconnect_streak = 0
         self._connected_since = 0.0
         self._enter_fail_at = 0.0
-        self._banned_moves = set()           # ★ nước bị server từ chối trong ván hiện tại
+        self._banned_moves = set()
         self._last_sent_move = None
         self._play_reject_count = 0
         self._latest_bestmove = None
@@ -663,8 +653,8 @@ class PikafishBot:
         self._quick_play_attempts = 0
         self._search_room_idx = 0
         self._search_bet_idx = 0
-        # Vào lobby mới
         self.send_enter_place(new_lobby)
+        return new_lobby
 
     def _reset_lobby_cycle(self):
         """Reset vòng dò lobby về ban đầu."""
@@ -840,9 +830,6 @@ class PikafishBot:
             legal = self._generate_legal_non_fixed_moves(fen, fixed_positions, banned_moves)
             if legal:
                 print(f"[ENGINE] 🔄 Chấm điểm {len(legal)} nước hợp lệ...")
-                # ★ Tắt ghi trend cache: các _score_single_move tìm ở thế cờ TỚI LƯỢT
-                #   ĐỐI PHƯƠNG, nếu để TrendAnalyzer ghi thì _do_auto_move sẽ lấy
-                #   PV của đối phương thay cho nước của mình -> gửi nước rác.
                 self.trend_analyzer.enabled = False
                 best_alt, best_score = None, -10**9
                 try:
@@ -861,7 +848,6 @@ class PikafishBot:
             if legal:
                 print(f"[ENGINE] 🆘 Chọn nước hợp lệ bất kỳ: {legal[0]}")
                 return f"bestmove {legal[0]}"
-
 
             print("[ENGINE] ❌ KHÔNG có nước hợp lệ nào")
             return None
@@ -887,7 +873,6 @@ class PikafishBot:
             return False
 
     def _move_is_forbidden(self, move_str, fixed_positions, banned_moves=None):
-        """Nước bị cấm: đi từ chốt liệt (hoặc ăn chốt liệt nếu luật cấm) hoặc đã bị server từ chối."""
         if not move_str:
             return True
         if banned_moves and move_str in banned_moves:
@@ -919,7 +904,6 @@ class PikafishBot:
                     is_mine = (piece.isupper() and my_color == 'w') or \
                               (piece.islower() and my_color == 'b')
                     if not is_mine: continue
-                    # ★ Vị trí trên server/engine: pos = rank*9 + col với rank = 9 - row(lưới FEN)
                     src_rank = 9 - row
                     src_pos = src_rank * 9 + col
                     if fixed_positions and src_pos in fixed_positions:
@@ -934,7 +918,6 @@ class PikafishBot:
                         if FIXED_PAWN_NO_CAPTURE and fixed_positions \
                                 and (9 - tr) * 9 + tc in fixed_positions:
                             continue
-                        # ★ rank = 9 - row(lưới FEN), KHÔNG dùng row trực tiếp
                         mv = f"{chr(ord('a')+col)}{src_rank}{chr(ord('a')+tc)}{9-tr}"
                         if mv in banned_moves:
                             continue
@@ -1011,7 +994,7 @@ class PikafishBot:
     def _score_single_move(self, fen, moves, candidate):
         try:
             self._latest_bestmove = None
-            self._last_score = "?"   # tránh lấy điểm của lượt/chấm điểm trước
+            self._last_score = "?"
             self.trend_analyzer.clear()
             all_moves = list(moves) + [candidate]
             pos_cmd = f"position fen {fen} moves " + " ".join(all_moves)
@@ -1114,9 +1097,12 @@ class PikafishBot:
 
     # ==================== BET & TABLE ====================
     def get_valid_bet_objs(self):
-        if not self.bet_amts: return []
+        """★ CHỈ trả về các mức cược nằm trong ALLOWED_BET_VALUES."""
+        if not self.bet_amts:
+            return []
+        allowed = set(ALLOWED_BET_VALUES)
         return [ba for ba in self.bet_amts
-                if isinstance(ba.get("value"), int) and BET_MIN <= ba["value"] <= BET_MAX]
+                if isinstance(ba.get("value"), int) and ba["value"] in allowed]
 
     def is_family_bot(self, name):
         if not name or name.strip().lower() == CURRENT_PLAYER_NICKNAME.lower():
@@ -1127,7 +1113,8 @@ class PikafishBot:
         if self.board.is_playing:
             print("[TABLE] ⚠️ Đang trong ván đấu -> Khóa không rời bàn!")
             return
-        print(f"[TABLE] 🚪 Rời bàn, quay lại lobby {self._current_lobby()} để dò bàn {BET_MIN}-{BET_MAX} xu...")
+        print(f"[TABLE] 🚪 Rời bàn, quay lại lobby {self._current_lobby()} "
+              f"để dò bàn {list(ALLOWED_BET_VALUES)} xu...")
         if getattr(self, '_table_path', None):
             unregister_bot_table(self._table_path)
         self.in_game = False
@@ -1138,65 +1125,38 @@ class PikafishBot:
         self.slot_players.clear()
         self.board.reset()
         self.fixed_pawn_positions.clear()
-        # Reset vòng dò bàn (nhưng giữ nguyên lobby hiện tại)
         self._quick_play_attempts = 0
         self._lobbies_tried = 0
         self._search_room_idx = 0
         self._search_bet_idx = 0
         self._enter_fail_at = 0.0
+        # ★ KHÔNG reset _current_lobby_idx — giữ nguyên lobby hiện tại
         self.send_enter_place(self._current_lobby())
 
     def _lower_bet_level(self):
-        global BOT_BET_XU
-        if not self.bet_amts:
-            print("[BET] ⚠️ Chưa có danh sách mức cược, gửi yêu cầu lấy lại...")
-            self._bet_amts_loaded = False
-            self.send_list_bet_amt()
-            return
-        current = BOT_BET_XU
-        all_values = sorted(set(ba['value'] for ba in self.bet_amts if ba['value'] > 0))
-        lower_options = [v for v in all_values if v < current]
-        if lower_options:
-            new_bet = max(lower_options)
-            print(f"[BET] 📉 Giảm mức cược: {current} -> {new_bet}")
-            BOT_BET_XU = new_bet
-            self._resolved_bet_id = self.resolve_bet_amt_id()
-        else:
-            print(f"[BET] ⚠️ Đã ở mức cược thấp nhất ({current}), giữ nguyên.")
-            self._resolved_bet_id = self.resolve_bet_amt_id()
+        """★ KHÔNG hạ cược — bot chỉ chơi 4 mức cố định. Chỉ reset bộ đếm dò bàn."""
+        print(f"[BET] ⚠️ Không hạ cược (chỉ chơi {list(ALLOWED_BET_VALUES)} xu). "
+              f"Reset bộ đếm dò bàn để thử lại.")
+        self._quick_play_attempts = 0
+        self._lobbies_tried = 0
+        self._search_room_idx = 0
+        self._search_bet_idx = 0
         self._bet_amts_loaded = False
         self.send_list_bet_amt()
 
     def resolve_bet_amt_id(self):
-        if not self.bet_amts: return None
-        in_range = self.get_valid_bet_objs()
-        if in_range:
-            return random.choice(in_range)['id']
-        for ba in self.bet_amts:
-            if ba.get("value") == BOT_BET_XU:
-                return ba["id"]
-        return 0
+        """★ Chỉ trả về bet thuộc ALLOWED_BET_VALUES, KHÔNG fallback."""
+        valid = self.get_valid_bet_objs()
+        if not valid:
+            return None
+        # Ưu tiên bet nhỏ nhất trước (10000) để tiết kiệm xu
+        valid_sorted = sorted(valid, key=lambda b: b["value"])
+        return valid_sorted[0]["id"]
 
     def send_create_table(self, bet_amt_id=None):
-        now = time.time()
-        if now - self._last_quick_play_time < self._QUICK_PLAY_INTERVAL: return
-        self._last_quick_play_time = now
-        if bet_amt_id is None:
-            bet_amt_id = self._resolved_bet_id if self._resolved_bet_id is not None else self.resolve_bet_amt_id()
-        if bet_amt_id is None: return
-        args = [
-            ("matchDuration", str(BOT_MATCH_DURATION)),
-            ("turnDuration", str(BOT_TURN_DURATION)),
-            ("accDuration", str(BOT_ACC_DURATION)),
-            ("blockSoftware", str(BOT_BLOCK_SOFTWARE)),
-        ]
-        data = bytearray()
-        data.extend(self.conn.pack_byte(bet_amt_id))
-        data.extend(self.conn.pack_byte(len(args)))
-        for arg_name, arg_value in args:
-            data.extend(self.conn.pack_ascii(arg_name))
-            data.extend(self.conn.pack_string(arg_value))
-        self.send_message("CREATE_RULE", bytes(data))
+        """★ ĐÃ VÔ HIỆU HÓA: Bot chỉ tìm bàn, KHÔNG tạo bàn."""
+        print("[CREATE] ❌ send_create_table() bị vô hiệu hóa — bot chỉ tìm bàn có sẵn.")
+        return
 
     def send_quick_play(self, room_id="", bet_amt_id=-1):
         now = time.time()
@@ -1208,11 +1168,12 @@ class PikafishBot:
         self.send_message("QUICK_PLAY", bytes(data))
 
     def _next_quick_play_target(self):
+        """★ Xoay vòng: 4 mức cược × 4 room, chỉ dò 8 lần/lobby."""
         valid_bets = self.get_valid_bet_objs()
         if not valid_bets:
-            room = self.ROOM_LIST[self._search_room_idx % len(self.ROOM_LIST)]
-            self._search_room_idx += 1
-            return room, -1, f"room={room} bet=ANY"
+            return None, None, "NO_VALID_BET"
+        # Sắp xếp theo giá trị để xoay đều 10000 -> 20000 -> 50000 -> 100000
+        valid_bets = sorted(valid_bets, key=lambda b: b["value"])
         bet = valid_bets[self._search_bet_idx % len(valid_bets)]
         room = self.ROOM_LIST[self._search_room_idx % len(self.ROOM_LIST)]
         self._search_bet_idx += 1
@@ -1284,7 +1245,6 @@ class PikafishBot:
                 fetch_session_info()
                 self._send_login()
                 return
-            # Vào lobby hiện tại
             self.send_enter_place(self._current_lobby())
 
     def _handle_enter_place_response(self, msg):
@@ -1358,41 +1318,30 @@ class PikafishBot:
             self._joining_table = False
 
     def _handle_list_bet_amt_response(self, msg):
-        if msg.read_byte() != 0: return
+        if msg.read_byte() != 0:
+            return
         count = msg.read_byte()
         self.bet_amts = [{"id": i, "value": msg.read_int()} for i in range(count)]
         self._resolved_bet_id = self.resolve_bet_amt_id()
         self._bet_amts_loaded = True
+
         valid = self.get_valid_bet_objs()
         if valid:
-            print(f"[BET] 📋 Mức cược hợp lệ [{BET_MIN}-{BET_MAX}]: "
-                  + ", ".join(f"{b['value']}(id={b['id']})" for b in valid))
+            print(f"[BET] 📋 Mức cược hợp lệ (chỉ dò 4 mức): "
+                  + ", ".join(f"{b['value']}(id={b['id']})"
+                              for b in sorted(valid, key=lambda x: x['value'])))
         else:
-            print(f"[BET] ⚠️ Server không có mức cược nào trong [{BET_MIN}-{BET_MAX}]. "
-                  f"Sẽ fallback về {BOT_BET_XU} khi tạo bàn.")
+            server_values = sorted(set(ba['value'] for ba in self.bet_amts))
+            missing = [v for v in ALLOWED_BET_VALUES
+                       if v not in {ba['value'] for ba in self.bet_amts}]
+            print(f"[BET] ⚠️ Server KHÔNG có mức cược nào trong "
+                  f"{list(ALLOWED_BET_VALUES)}. Server có: {server_values}. "
+                  f"Thiếu: {missing}. Bot sẽ chờ và thử lại (KHÔNG tạo bàn).")
 
     def _handle_create_rule_response(self, msg):
+        # ★ Vô hiệu hóa: bot KHÔNG tạo bàn, nếu server vẫn trả về thì bỏ qua
         status = msg.read_byte()
-        if status == 0:
-            table_path = msg.read_ascii()
-            self.in_game = True
-            self._joining_table = True
-            self._quick_play_attempts = 0
-            self._lobbies_tried = 0
-            self._table_created_by_me = True
-            self._sit_alone_since = time.time()
-            self._table_path = table_path; self._table_path_ts = time.time()
-            register_bot_table(table_path, USER)
-            print(f"[CREATE] 🎉 Tạo bàn thành công ở lobby '{self._current_lobby()}': {table_path}.")
-            def async_join():
-                time.sleep(0.5)
-                self.send_enter_place(path=table_path, mode=1)
-            threading.Thread(target=async_join, daemon=True).start()
-        else:
-            print(f"[CREATE] ❌ Tạo bàn thất bại (status={status}). Reset bộ đếm dò.")
-            self._joining_table = False
-            self._quick_play_attempts = 0
-            self._lobbies_tried = 0
+        print(f"[CREATE] (bỏ qua) Server trả CREATE_RULE status={status} — bot không tạo bàn.")
 
     def _handle_player_entered(self, msg):
         try:
@@ -1403,9 +1352,9 @@ class PikafishBot:
                 self.player_names[pid] = name
                 print(f"[PLAYER] 👤 Người chơi '{name}' (id={pid}) vào bàn/phòng (level={place_level})")
                 if not self.board.is_playing and self.is_family_bot(name) and self.opponent_player_id() == pid:
-                    print(f"[AVOID] ⚠️ Đồng đội '{name}' ở ghế đối diện! Rời bàn + giảm cược...")
+                    print(f"[AVOID] ⚠️ Đồng đội '{name}' ở ghế đối diện! Rời bàn...")
                     self.leave_table()
-                    self._lower_bet_level()
+                    # ★ KHÔNG gọi _lower_bet_level()
         except Exception: pass
 
     def _handle_slot_changed(self, msg):
@@ -1425,9 +1374,9 @@ class PikafishBot:
                     name = self.player_names.get(player_id, "")
                     print(f"[TABLE] 👤 Ghế đối diện (slot={slot_id}): playerId={player_id}{f', name={name}' if name else ''}")
                     if not self.board.is_playing and self.is_family_bot(name):
-                        print(f"[AVOID] ⚠️ Đối thủ '{name}' là bot đồng đội! Rời bàn + giảm cược...")
+                        print(f"[AVOID] ⚠️ Đối thủ '{name}' là bot đồng đội! Rời bàn...")
                         self.leave_table()
-                        self._lower_bet_level()
+                        # ★ KHÔNG gọi _lower_bet_level()
                         return
                     self._sit_alone_since = None
                     if not self.board.is_playing:
@@ -1454,7 +1403,6 @@ class PikafishBot:
         self.board.reset()
         self.fixed_pawn_positions.clear()
         self._banned_moves = set()
-        self._play_reject_count = 0
         self.board.is_playing = True
         self.in_game = True
         self._joining_table = False
@@ -1537,12 +1485,10 @@ class PikafishBot:
     def _handle_play_response(self, msg):
         if msg.read_byte() != 0:
             self.board.is_my_turn = True
-            # ★ Phải bật lại cờ, nếu không watchdog 12s sẽ KHÔNG BAO GIỜ cứu được
             self._played_this_turn = False
             self._play_reject_count = getattr(self, '_play_reject_count', 0) + 1
             bad = getattr(self, '_last_sent_move', None)
             if bad:
-                # ★ Cấm vĩnh viễn nước bị từ chối trong ván -> lần sau engine phải chọn phương án khác
                 self._banned_moves.add(bad)
                 print(f"[PLAY] ⚠️ Server từ chối nước {bad} (lần {self._play_reject_count}) "
                       f"-> CẤM nước này ({len(self._banned_moves)} nước bị cấm), tính nước khác")
@@ -1654,10 +1600,11 @@ class PikafishBot:
                         time.sleep(2.0)
                 elif is_guest:
                     print("[GAME] 👤 Khách vào bàn -> không có quyền kick, rời bàn ngay...")
-                print(f"[GAME] 🔄 Thua trận -> Rời bàn -> Dò bàn {BET_MIN}-{BET_MAX} xu...")
+                print(f"[GAME] 🔄 Thua trận -> Rời bàn -> Dò lại 4 mức cược "
+                      f"{list(ALLOWED_BET_VALUES)} xu...")
                 time.sleep(1.0)
                 self.leave_table()
-                self._lower_bet_level()
+                # ★ KHÔNG gọi _lower_bet_level()
             else:
                 print("[GAME] ✅ Thắng/Hoà -> Ở lại bàn, sẵn sàng ván tiếp...")
                 time.sleep(3.0)
@@ -1734,7 +1681,8 @@ class PikafishBot:
         print(f"[BOT] ⚙️ Engine: mainline Pikafish (mistboard level 8, MultiPV mặc định = {ENGINE_MULTIPV})")
         print(f"[BOT] 🛡️ Khi bàn có chốt liệt: tạm bật MultiPV={ENGINE_MULTIPV_FIXED_PAWN} + fallback sinh nước hợp lệ")
         print(f"[BOT] 🎯 Chiến lược: Dò {QUICK_PLAY_MAX_ATTEMPTS} lần/lobby × {len(LOBBY_LIST)} lobby "
-              f"({LOBBY_LIST[0]} → {LOBBY_LIST[-1]}), sau đó tạo bàn {BOT_BET_XU} xu")
+              f"({LOBBY_LIST[0]} → {LOBBY_LIST[-1]}), lặp vòng — "
+              f"CHỈ TÌM BÀN ở 4 mức cược {list(ALLOWED_BET_VALUES)} xu, KHÔNG TẠO BÀN")
         print(f"[BOT] ⏱️ Chờ trong bàn {int(SIT_ALONE_TIMEOUT)}s trước khi rời tìm bàn mới")
 
         while True:
@@ -1804,10 +1752,12 @@ class PikafishBot:
                     self.leave_table()
 
                 # ============================================================
-                # ★ CHIẾN LƯỢC DÒ BÀN XUYÊN 8 LOBBY:
-                #   • Mỗi lobby dò tối đa QUICK_PLAY_MAX_ATTEMPTS lần.
-                #   • Hết -> chuyển lobby kế tiếp (tối đa 8 lobby).
-                #   • Xoay hết 8 lobby -> fallback CREATE_RULE BOT_BET_XU.
+                # ★ CHIẾN LƯỢC DÒ BÀN (KHÔNG TẠO BÀN):
+                #   • Mỗi lobby dò tối đa QUICK_PLAY_MAX_ATTEMPTS = 8 lần.
+                #   • 8 lần đó xoay qua 4 mức cược {10000,20000,50000,100000} × room.
+                #   • Hết 8 lần -> ENTER_PLACE sang lobby kế tiếp.
+                #   • Xoay hết 8 lobby -> quay lại lobby đầu, dò vòng mới.
+                #   • TUYỆT ĐỐI KHÔNG gọi CREATE_RULE.
                 # ============================================================
                 if (self.connected and self.logged_in and not self.in_game
                         and not self._joining_table):
@@ -1816,35 +1766,37 @@ class PikafishBot:
                         if not self._bet_amts_loaded:
                             self.send_list_bet_amt()
                         else:
-                            # Còn lượt dò ở lobby hiện tại?
-                            if self._quick_play_attempts < QUICK_PLAY_MAX_ATTEMPTS:
+                            valid_bets = self.get_valid_bet_objs()
+                            if not valid_bets:
+                                print(f"[SEARCH] ⚠️ Chưa có mức cược nào thuộc "
+                                      f"{list(ALLOWED_BET_VALUES)}. Chờ 5s rồi lấy lại...")
+                                time.sleep(5)
+                                self._bet_amts_loaded = False
+                                self.send_list_bet_amt()
+                            elif self._quick_play_attempts < QUICK_PLAY_MAX_ATTEMPTS:
                                 room, bid, label = self._next_quick_play_target()
-                                print(f"[SEARCH] 🔍 Dò bàn lobby '{self._current_lobby()}' "
-                                      f"[{self._quick_play_attempts + 1}/{QUICK_PLAY_MAX_ATTEMPTS}] {label}")
-                                self.send_quick_play(room_id=room, bet_amt_id=bid)
+                                if bid is None:
+                                    print("[SEARCH] ⚠️ Không resolve được bet_id hợp lệ, bỏ qua lượt này")
+                                else:
+                                    print(f"[SEARCH] 🔍 Dò bàn lobby '{self._current_lobby()}' "
+                                          f"[{self._quick_play_attempts + 1}/{QUICK_PLAY_MAX_ATTEMPTS}] {label}")
+                                    self.send_quick_play(room_id=room, bet_amt_id=bid)
                                 self._quick_play_attempts += 1
                             else:
-                                # Hết lượt dò ở lobby này -> chuyển lobby kế
+                                # Hết 8 lượt dò ở lobby này
                                 if self._lobbies_tried < len(LOBBY_LIST) - 1:
                                     print(f"[SEARCH] 🔄 Đã dò hết {QUICK_PLAY_MAX_ATTEMPTS} lần ở "
                                           f"lobby '{self._current_lobby()}' không thấy bàn.")
                                     self._advance_lobby()
                                 else:
-                                    # Đã dò hết cả 8 lobby -> tạo bàn
-                                    if BOT_USE_CREATE_TABLE:
-                                        bid = (self._resolved_bet_id
-                                               if self._resolved_bet_id is not None
-                                               else self.resolve_bet_amt_id())
-                                        print(f"[CREATE] 🪑 Đã dò hết {len(LOBBY_LIST)} lobby × "
-                                              f"{QUICK_PLAY_MAX_ATTEMPTS} lần không thấy bàn. "
-                                              f"Tạo bàn {BOT_BET_XU} xu (bet_id={bid}) ở lobby "
-                                              f"'{self._current_lobby()}'")
-                                        self.send_create_table(bet_amt_id=bid)
-                                    else:
-                                        # Chỉ dò, không tạo: reset vòng
-                                        print(f"[SEARCH] 🔄 Hết 1 vòng 8 lobby (BOT_USE_CREATE_TABLE=False). "
-                                              f"Reset để dò lại.")
+                                    # ★ Đã dò hết 8 lobby -> quay lại lobby đầu
+                                    print(f"[SEARCH] 🔄 Đã dò hết {len(LOBBY_LIST)} lobby × "
+                                          f"{QUICK_PLAY_MAX_ATTEMPTS} lần không thấy bàn. "
+                                          f"Quay lại lobby '{LOBBY_LIST[0]}' để dò vòng mới...")
+                                    self._current_lobby_idx = 0
+                                    PLACE_PATH = LOBBY_LIST[0]
                                     self._reset_lobby_cycle()
+                                    self.send_enter_place(LOBBY_LIST[0])
                 time.sleep(1)
             except KeyboardInterrupt: break
             except Exception as e:
