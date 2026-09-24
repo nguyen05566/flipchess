@@ -114,8 +114,8 @@ BOT_TURN_DURATION = '60'
 BOT_ACC_DURATION = '0'
 BOT_BLOCK_SOFTWARE = '1'
 
-SIT_ALONE_TIMEOUT = 30.0
-ENTER_FAIL_TIMEOUT = 30.0
+SIT_ALONE_TIMEOUT = 3.0
+ENTER_FAIL_TIMEOUT = 3.0
 
 VN_TEN_DAU = [
     "Tuấn", "Minh", "Đức", "Hoàng", "Huy", "Hùng", "Dũng", "Cường", "Long", "Nam",
