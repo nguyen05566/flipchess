@@ -89,7 +89,7 @@ KICK_DELAY = 5.0
 BOT_BET_XU = 50000
 # Chỉ tạo bàn (CREATE_RULE) — KHÔNG dò/find bàn (QUICK_PLAY).
 # Logic 'chuyển xu' (transfer_xu_sync) đã bị bỏ theo yêu cầu user.
-BOT_USE_CREATE_TABLE = True
+BOT_USE_CREATE_TABLE = False
 BOT_MATCH_DURATION = '5'
 BOT_TURN_DURATION = '60'
 BOT_ACC_DURATION = '0'
