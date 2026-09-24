@@ -103,9 +103,9 @@ KICK_MODE = "when_lose"
 KICK_DELAY = 5.0
 
 # ==================== TÌM BÀN / TẠO BÀN ====================
-BET_MIN = 5000
+BET_MIN = 10000
 BET_MAX = 100000
-BOT_BET_XU = 5000
+BOT_BET_XU = 10000
 QUICK_PLAY_MAX_ATTEMPTS = 8               # dò tối đa 8 lần MỖI lobby
 BOT_USE_CREATE_TABLE = False
 
