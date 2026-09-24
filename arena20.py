@@ -9,12 +9,12 @@ Engine tier: pikafish-xiangqi-level-8 (mistboard)
   - REQUIRES pikafish.nnue (EvalFile)
 Source: https://github.com/brianhliou/mistboard (apps/server/src/xiangqi-pikafish-engine.ts)
 
-★ PATCH v3:
-  - Cơ chế TÌM BÀN có giới hạn 8 lần (dò rồi fallback tạo bàn).
-  - Xử lý CHỐT LIỆT thông minh:
-      • Bình thường: MultiPV=1, movetime=4s (mistboard level 8).
-      • Có chốt liệt: TẠM BẬT MultiPV=3, quét PV + fallback sinh nước hợp lệ
-        để bot KHÔNG BAO GIỜ đứng hình vì bestmove dính chốt.
+★ PATCH v3 (hoàn chỉnh):
+  - Cơ chế TÌM BÀN: dò QUICK_PLAY tối đa 8 lần, xoay vòng (room, bet) trong
+    [5000, 10000]; hết 8 lần thì fallback CREATE_RULE BOT_BET_XU=5000.
+  - Cơ chế CHỐT LIỆT: bình thường MultiPV=1 + movetime 4s (mistboard level 8);
+    khi bàn có chốt liệt thì TẠM BẬT MultiPV=3 + movetime 3s, quét PV, sinh
+    nước hợp lệ từ FEN và chấm điểm — bot KHÔNG BAO GIỜ đứng hình.
 """
 
 import struct
@@ -62,7 +62,7 @@ GAME_ID = 'xiangqi'
 PLACE_PATH = 'Lobby.xiangqi.0'
 
 # ==================== ENGINE CONFIG ====================
-# MultiPV MẶC ĐỊNH khi bàn bình thường: 1 (mistboard level 8 chuẩn).
+# MultiPV MẶC ĐỊNH khi bàn bình thường: 1 (mistboard level 8).
 ENGINE_MULTIPV = 1
 # Khi bàn có chốt liệt: tạm bật MultiPV=3 để có nước thay thế.
 ENGINE_MULTIPV_FIXED_PAWN = 3
@@ -70,20 +70,22 @@ ENGINE_MULTIPV_FIXED_PAWN = 3
 # Mistboard level 8: nodes=3M, movetime=4s (whichever binds first).
 PIKAFISH_LEVEL_8_NODES = 3_000_000
 PIKAFISH_LEVEL_8_MOVETIME_MS = 4_000
-# Khi bàn có chốt liệt, giới hạn movetime ngắn hơn để xoay nhiều PV kịp.
+# Khi bàn có chốt liệt: giới hạn movetime ngắn hơn để còn xoay nhiều lớp fallback.
 PIKAFISH_FIXED_PAWN_MOVETIME_MS = 3_000
 
+# Thời gian TỐI THIỂU từ lúc tới lượt đến khi gửi nước đi (giây).
 MIN_MOVE_SECONDS = 2.0
 
+# Kick đối phương sau khi hết ván (giống nguyen1..nguyen6).
 KICK_MODE = "when_lose"
 KICK_DELAY = 5.0
 
-# ==================== CẤU HÌNH TÌM BÀN / TẠO BÀN ====================
+# ==================== TÌM BÀN / TẠO BÀN ====================
 BET_MIN = 5000
 BET_MAX = 10000
-BOT_BET_XU = 5000
-QUICK_PLAY_MAX_ATTEMPTS = 8
-BOT_USE_CREATE_TABLE = True
+BOT_BET_XU = 5000                 # mức cược khi fallback tạo bàn
+QUICK_PLAY_MAX_ATTEMPTS = 8       # dò tối đa 8 lần
+BOT_USE_CREATE_TABLE = True       # True: fallback tạo bàn. False: chỉ dò mãi.
 
 BOT_MATCH_DURATION = '5'
 BOT_TURN_DURATION = '60'
@@ -124,6 +126,7 @@ VN_TEN_KHONG_DAU = [
 _IDENTITY_SYNCED = False
 
 def generate_dotted_full_name():
+    """Tạo tên tiếng Việt ngẫu nhiên + chèn 1 dấu chấm (marker nhận diện đồng đội)."""
     name = random.choice(VN_TEN_DAU if random.choice([True, False]) else VN_TEN_KHONG_DAU)
     if len(name) >= 2:
         pos = random.randint(1, len(name) - 1)
@@ -131,6 +134,7 @@ def generate_dotted_full_name():
     return name
 
 def sync_profile_name(session):
+    """Đổi FULL_NAME thành tên có dấu chấm."""
     try:
         edit_url = "https://gamevh.net/com/ftl/game/profile/update_profile.jsp"
         page = session.get(edit_url, timeout=15, allow_redirects=True)
@@ -150,9 +154,7 @@ def sync_profile_name(session):
             nm = re.search(r'name=["\']([^"\']+)["\']', tag)
             val = re.search(r'value=["\']([^"\']*)["\']', tag)
             if nm:
-                k = nm.group(1)
-                v = val.group(1) if val else ''
-                data[k] = v
+                data[nm.group(1)] = val.group(1) if val else ''
 
         old_full_name = data.get('FULL_NAME', '')
         new_full_name = generate_dotted_full_name()
@@ -172,6 +174,7 @@ def sync_profile_name(session):
 
 
 def sync_random_avatar(session):
+    """Đổi avatar ngẫu nhiên (có thể phát sinh phí xu)."""
     try:
         profile_url = "https://gamevh.net/com/ftl/game/profile/player_profile.jsp"
         before = session.get(profile_url, timeout=15)
@@ -215,6 +218,7 @@ def sync_random_avatar(session):
         print(f"[PROFILE] Lỗi đổi avatar: {e}")
 
 def is_block_software_message(raw_bytes):
+    """Phát hiện gói tin bàn có blockSoftware=1."""
     try:
         idx = raw_bytes.find(b"blockSoftware")
         if idx != -1:
@@ -261,6 +265,7 @@ def unregister_bot_table(table_path):
     except Exception: pass
 
 def fetch_session_info():
+    """Đăng nhập bằng USER/PASSWD và lấy token/nickname/playerId."""
     global COOKIE, TOKEN, CURRENT_PLAYER_NICKNAME, CURRENT_PLAYER_ID, PLACE_PATH, _IDENTITY_SYNCED
     try:
         session = requests.Session()
@@ -498,7 +503,7 @@ class XiangqiBoardTracker:
         self.is_red = (self.my_slot_id == self.first_turn_slot_id)
 
 class TrendAnalyzer:
-    """Bộ não phân tích dữ liệu RAM: Hỗ trợ quét kép Sát cục (Mate) và Điểm số xu hướng (CP)"""
+    """Phân tích dữ liệu engine: sát cục (Mate) và điểm CP."""
     def __init__(self):
         self.pv_ram_cache = {}
         self.info_regex = re.compile(r"info .* score cp (-?\d+) .* pv (.+)")
@@ -508,7 +513,7 @@ class TrendAnalyzer:
         self.pv_ram_cache.clear()
 
     def parse_line(self, line_str):
-        # 1. Sát cục (Mate) — ưu tiên tuyệt đối
+        # Sát cục — ưu tiên tuyệt đối
         mate_match = self.mate_regex.search(line_str)
         if mate_match:
             mate_score = int(mate_match.group(1))
@@ -522,7 +527,7 @@ class TrendAnalyzer:
                 }
                 return
 
-        # 2. CP thông thường — chấp nhận mọi PV >= 1 nước (không cần >= 3)
+        # CP thông thường — chấp nhận PV >= 1 nước
         match = self.info_regex.search(line_str)
         if match:
             score = int(match.group(1))
@@ -538,34 +543,28 @@ class TrendAnalyzer:
     def select_best_trend_move(self):
         if not self.pv_ram_cache:
             return None
-
-        # Ưu tiên TUYỆT ĐỐI: sát cục thắng
+        # Sát cục thắng
         for move, data in self.pv_ram_cache.items():
             if data["mate_in"] is not None and data["mate_in"] > 0:
                 print(f"[RAM-MATE] 🔥 Phát hiện nhánh sát cục tuyệt đối! Dứt điểm ngay: {move}")
                 return move
-
         best_move = None
         avg_score = sum(d["current_score"] for d in self.pv_ram_cache.values()) / len(self.pv_ram_cache)
         is_negative = avg_score < 0
-
         if is_negative:
             max_recovery = -999999
             for move, data in self.pv_ram_cache.items():
-                recovery_rate = data["current_score"]
-                if recovery_rate > max_recovery:
-                    max_recovery = recovery_rate
+                if data["current_score"] > max_recovery:
+                    max_recovery = data["current_score"]
                     best_move = move
-            print(f"[RAM-LEARN] Đang lép vế ({int(avg_score)}). Ép chọn nước phòng thủ tốt nhất: {best_move}")
+            print(f"[RAM-LEARN] Đang lép vế ({int(avg_score)}). Chọn nước phòng thủ tốt nhất: {best_move}")
         else:
             max_growth = -999999
             for move, data in self.pv_ram_cache.items():
-                growth_rate = data["current_score"]
-                if growth_rate > max_growth:
-                    max_growth = growth_rate
+                if data["current_score"] > max_growth:
+                    max_growth = data["current_score"]
                     best_move = move
-            print(f"[RAM-LEARN] Đang ưu thế (+{int(avg_score)}). Ép chọn nước tăng điểm tốt nhất: {best_move}")
-
+            print(f"[RAM-LEARN] Đang ưu thế (+{int(avg_score)}). Chọn nước tăng điểm tốt nhất: {best_move}")
         return best_move
 
     def top_moves(self, n=5):
@@ -622,7 +621,6 @@ class PikafishBot:
         self._score_regex = re.compile(r"depth (\d+).*score (cp|mate) (-?\d+)")
         self._last_score = "?"
         self._last_depth = "?"
-        # Cờ hiệu: engine đang ở chế độ MultiPV đặc biệt cho chốt liệt?
         self._engine_multipv = ENGINE_MULTIPV
         self._init_engine()
 
@@ -643,7 +641,7 @@ class PikafishBot:
         pikafish_path = next((p for p in possible_paths if os.path.isfile(p) and os.access(p, os.X_OK)), None)
         if not pikafish_path:
             print("[ENGINE] ❌ KHÔNG TÌM THẤY pikafish! Đã tìm ở: " + ", ".join(possible_paths))
-            print("[ENGINE] ❌ Bot sẽ KHÔNG đánh được nước nào. Hãy cài engine trước khi chạy.")
+            print("[ENGINE] ❌ Bot sẽ KHÔNG đánh được nước nào.")
             return
 
         nnue_candidates = [
@@ -663,7 +661,8 @@ class PikafishBot:
 
         try:
             self._engine_proc = subprocess.Popen(
-                [pikafish_path], stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, bufsize=1
+                [pikafish_path], stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, text=True, bufsize=1
             )
 
             def consume_stderr(proc):
@@ -704,7 +703,6 @@ class PikafishBot:
             _threads = max(1, min(4, (os.cpu_count() or 2) - 1))
             self._fsf_cmd(f"setoption name Threads value {_threads}")
             self._fsf_cmd("setoption name Hash value 256")
-            # MultiPV mặc định = 1 (mistboard level 8)
             self._fsf_cmd(f"setoption name MultiPV value {ENGINE_MULTIPV}")
             self._engine_multipv = ENGINE_MULTIPV
 
@@ -723,7 +721,7 @@ class PikafishBot:
             self._engine_proc.stdin.flush()
 
     def _set_multipv(self, value):
-        """Đổi MultiPV runtime — engine chỉ áp dụng khi gửi tiếp theo."""
+        """Đổi MultiPV runtime (chỉ gửi khi khác giá trị hiện tại)."""
         if getattr(self, '_engine_proc', None) and self._engine_proc.poll() is None:
             if self._engine_multipv != value:
                 self._fsf_cmd(f"setoption name MultiPV value {value}")
@@ -732,15 +730,8 @@ class PikafishBot:
     # ==================== MOVE SEARCH ====================
     def get_best_move(self, fen, moves, fixed_positions=None):
         """
-        Nếu KHÔNG có chốt liệt:
-          - MultiPV = 1, movetime = 4000ms (mistboard level 8)
-          - Trả thẳng bestmove
-        Nếu CÓ chốt liệt:
-          - Tạm bật MultiPV = 3, movetime = 3000ms
-          - Nếu bestmove không dính chốt -> dùng
-          - Nếu dính -> quét PV khác trong TrendAnalyzer
-          - Nếu tất cả dính -> sinh nước hợp lệ + chấm điểm
-          - Fallback cuối: nước hợp lệ bất kỳ
+        - Không có chốt liệt: MultiPV=1, movetime=4s (mistboard level 8).
+        - Có chốt liệt: tạm MultiPV=3, movetime=3s, 4 lớp fallback.
         """
         try:
             if not getattr(self, '_engine_proc', None) or self._engine_proc.poll() is not None:
@@ -749,14 +740,13 @@ class PikafishBot:
             if fixed_positions:
                 return self._get_move_avoiding_fixed(fen, moves, fixed_positions)
 
-            # ===== BÀN BÌNH THƯỜNG: MultiPV=1, bestmove trực tiếp =====
-            self._set_multipv(ENGINE_MULTIPV)  # đảm bảo MultiPV=1
+            # BÀN BÌNH THƯỜNG
+            self._set_multipv(ENGINE_MULTIPV)
             self.trend_analyzer.clear()
 
             pos_cmd = f"position fen {fen}"
             if moves: pos_cmd += " moves " + " ".join(moves)
             self._fsf_cmd(pos_cmd)
-
             self._fsf_cmd(f"go nodes {PIKAFISH_LEVEL_8_NODES} movetime {PIKAFISH_LEVEL_8_MOVETIME_MS}")
             return self._read_bestmove(timeout=5.5)
         except Exception as e:
@@ -784,22 +774,17 @@ class PikafishBot:
 
     # ==================== CHỐT LIỆT HANDLER ====================
     def _get_move_avoiding_fixed(self, fen, moves, fixed_positions):
-        """
-        Tìm nước đi KHÔNG xuất phát từ chốt liệt.
-        Luôn khôi phục MultiPV=1 sau khi xong.
-        """
-        # Bật MultiPV=3 để có nước thay thế
+        """Tìm nước đi KHÔNG xuất phát từ chốt liệt. Luôn khôi phục MultiPV=1."""
         self._set_multipv(ENGINE_MULTIPV_FIXED_PAWN)
         time.sleep(0.05)
 
         try:
-            # ---- Bước 1: go 1 lần, đọc bestmove + PV ----
+            # Bước 1: go 1 lần, đọc bestmove + PV
             self.trend_analyzer.clear()
             self._latest_bestmove = None
             pos_cmd = f"position fen {fen}"
             if moves: pos_cmd += " moves " + " ".join(moves)
             self._fsf_cmd(pos_cmd)
-
             self._fsf_cmd(f"go nodes {PIKAFISH_LEVEL_8_NODES} movetime {PIKAFISH_FIXED_PAWN_MOVETIME_MS}")
 
             _wait_start = time.time()
@@ -815,7 +800,7 @@ class PikafishBot:
             parts = self._latest_bestmove.split()
             best_move = parts[1] if len(parts) >= 2 else None
 
-            # ---- Bước 2: bestmove không dính chốt -> dùng luôn ----
+            # Bước 2: bestmove không dính chốt -> dùng luôn
             if best_move and not self._move_hits_fixed_pawn(best_move, fixed_positions):
                 print(f"[ENGINE] ✅ Bestmove {best_move} không dính chốt liệt")
                 return self._latest_bestmove
@@ -823,18 +808,18 @@ class PikafishBot:
             if best_move:
                 print(f"[ENGINE] ⚠️ Bestmove {best_move} dính chốt liệt -> quét PV khác...")
 
-            # ---- Bước 3: quét PV từ MultiPV=3 ----
+            # Bước 3: quét PV từ MultiPV=3
             for mv in self.trend_analyzer.top_moves(n=5):
                 if not self._move_hits_fixed_pawn(mv, fixed_positions):
                     print(f"[ENGINE] ✅ Chọn từ MultiPV: {mv}")
                     return f"bestmove {mv}"
 
-            # ---- Bước 4: sinh nước hợp lệ từ FEN, chấm điểm ----
+            # Bước 4: sinh nước hợp lệ từ FEN, chấm điểm
             legal = self._generate_legal_non_fixed_moves(fen, fixed_positions)
             if legal:
                 print(f"[ENGINE] 🔄 Toàn bộ PV dính chốt. Chấm điểm {len(legal)} nước hợp lệ...")
                 best_alt, best_score = None, -10**9
-                for mv in legal[:30]:  # giới hạn 30 nước để khỏi chậm
+                for mv in legal[:30]:
                     score = self._score_single_move(fen, moves, mv)
                     if score is not None and score > best_score:
                         best_score = score
@@ -843,19 +828,17 @@ class PikafishBot:
                     print(f"[ENGINE] ✅ Fallback chọn nước hợp lệ: {best_alt} (score={best_score})")
                     return f"bestmove {best_alt}"
 
-            # ---- Bước 5: fallback cứng - chọn 1 nước hợp lệ bất kỳ ----
+            # Bước 5: fallback cứng
             if legal:
                 print(f"[ENGINE] 🆘 Chọn nước hợp lệ bất kỳ: {legal[0]}")
                 return f"bestmove {legal[0]}"
 
-            print("[ENGINE] ❌ KHÔNG có nước hợp lệ nào (hết nước hoặc bí cờ)")
+            print("[ENGINE] ❌ KHÔNG có nước hợp lệ nào")
             return None
         finally:
-            # Luôn khôi phục MultiPV=1
             self._set_multipv(ENGINE_MULTIPV)
 
     def _move_hits_fixed_pawn(self, move_str, fixed_positions):
-        """Kiểm tra nước đi có bắt đầu từ vị trí chốt liệt không."""
         if not fixed_positions or not move_str or len(move_str) < 4:
             return False
         try:
@@ -868,10 +851,7 @@ class PikafishBot:
 
     # ==================== SINH NƯỚC HỢP LỆ ====================
     def _generate_legal_non_fixed_moves(self, fen, fixed_positions):
-        """
-        Sinh toàn bộ nước hợp lệ (theo luật cờ tướng cơ bản) mà KHÔNG xuất phát
-        từ chốt liệt. Dùng làm fallback khi engine bí.
-        """
+        """Sinh toàn bộ nước hợp lệ (luật cờ tướng cơ bản), bỏ qua chốt liệt."""
         try:
             board_part = fen.split()[0]
             side = fen.split()[1] if len(fen.split()) > 1 else 'w'
@@ -896,8 +876,7 @@ class PikafishBot:
                     if not is_mine: continue
                     src_pos = row * 9 + col
                     if fixed_positions and src_pos in fixed_positions:
-                        continue  # bỏ qua chốt liệt
-
+                        continue
                     for tr, tc in self._piece_targets(grid, row, col, piece, my_color):
                         if not (0 <= tr < 10 and 0 <= tc < 9): continue
                         dst = grid[tr][tc]
@@ -913,7 +892,7 @@ class PikafishBot:
             return []
 
     def _piece_targets(self, grid, row, col, piece, my_color):
-        """Sinh toạ độ đích cho 1 quân theo luật cờ tướng (đã kiểm tra cản)."""
+        """Sinh toạ độ đích cho 1 quân theo luật cờ tướng (có kiểm tra cản)."""
         targets = []
         p = piece.lower()
 
@@ -922,18 +901,15 @@ class PikafishBot:
             if my_color == 'w': return 7 <= r <= 9
             else: return 0 <= r <= 2
 
-        # Tướng
-        if p == 'k':
+        if p == 'k':        # Tướng
             for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
                 nr, nc = row+dr, col+dc
                 if in_palace(nr, nc): targets.append((nr, nc))
-        # Sĩ
-        elif p == 'a':
+        elif p == 'a':      # Sĩ
             for dr, dc in [(-1,-1),(-1,1),(1,-1),(1,1)]:
                 nr, nc = row+dr, col+dc
                 if in_palace(nr, nc): targets.append((nr, nc))
-        # Tượng
-        elif p == 'b':
+        elif p == 'b':      # Tượng
             for dr, dc in [(-2,-2),(-2,2),(2,-2),(2,2)]:
                 nr, nc = row+dr, col+dc
                 if not (0 <= nr < 10 and 0 <= nc < 9): continue
@@ -941,16 +917,14 @@ class PikafishBot:
                 if my_color == 'b' and nr > 4: continue
                 if grid[(row+nr)//2][(col+nc)//2] != '.': continue
                 targets.append((nr, nc))
-        # Xe
-        elif p == 'r':
+        elif p == 'r':      # Xe
             for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
                 nr, nc = row+dr, col+dc
                 while 0 <= nr < 10 and 0 <= nc < 9:
                     targets.append((nr, nc))
                     if grid[nr][nc] != '.': break
                     nr += dr; nc += dc
-        # Pháo
-        elif p == 'c':
+        elif p == 'c':      # Pháo
             for dr, dc in [(-1,0),(1,0),(0,-1),(0,1)]:
                 nr, nc = row+dr, col+dc
                 jumped = False
@@ -966,8 +940,7 @@ class PikafishBot:
                             targets.append((nr, nc))
                             break
                     nr += dr; nc += dc
-        # Mã
-        elif p == 'n':
+        elif p == 'n':      # Mã
             for dr, dc in [(-2,-1),(-2,1),(-1,-2),(-1,2),(1,-2),(1,2),(2,-1),(2,1)]:
                 nr, nc = row+dr, col+dc
                 if not (0 <= nr < 10 and 0 <= nc < 9): continue
@@ -976,8 +949,7 @@ class PikafishBot:
                 else:
                     if grid[row][col+dc//2] != '.': continue
                 targets.append((nr, nc))
-        # Tốt
-        elif p == 'p':
+        elif p == 'p':      # Tốt
             if my_color == 'w':
                 targets.append((row-1, col))
                 if row <= 4:
@@ -990,7 +962,7 @@ class PikafishBot:
         return [(r, c) for (r, c) in targets if 0 <= r < 10 and 0 <= c < 9]
 
     def _score_single_move(self, fen, moves, candidate):
-        """Chấm điểm 1 nước bằng cách đặt position + nước đó, go depth 8."""
+        """Chấm điểm 1 nước bằng position + candidate, go depth 8."""
         try:
             self._latest_bestmove = None
             self.trend_analyzer.clear()
@@ -1048,12 +1020,13 @@ class PikafishBot:
     def _on_message(self, ws, message):
         self.last_recv_timestamp = time.time()
         if isinstance(message, bytes): self._handle_binary_message(message)
+
     def _on_error(self, ws, error):
         print(f"[WS] ❌ Lỗi kết nối: {type(error).__name__}: {error}")
 
     def _on_close(self, ws, code, msg):
         if self.board.is_playing:
-            print(f"[WS] ⚠️ MẤT KẾT NỐI GIỮA VÁN (code={code}, msg={msg}) -> mất bàn, sẽ phải tạo bàn mới")
+            print(f"[WS] ⚠️ MẤT KẾT NỐI GIỮA VÁN (code={code}, msg={msg}) -> mất bàn")
         else:
             print(f"[WS] Đóng kết nối (code={code}, msg={msg})")
         if self._connected_since and time.time() - self._connected_since < 60:
@@ -1107,7 +1080,7 @@ class PikafishBot:
 
     def leave_table(self):
         if self.board.is_playing:
-            print("[TABLE] ⚠️ Đang trong ván đấu -> Khóa không rời bàn cho đến khi GAMEOVER!")
+            print("[TABLE] ⚠️ Đang trong ván đấu -> Khóa không rời bàn!")
             return
         print(f"[TABLE] 🚪 Rời bàn, quay lại sảnh dò bàn {BET_MIN}-{BET_MAX} xu...")
         if getattr(self, '_table_path', None):
@@ -1148,6 +1121,7 @@ class PikafishBot:
         self.send_list_bet_amt()
 
     def resolve_bet_amt_id(self):
+        """Chọn bet_id khi tạo bàn: ưu tiên [BET_MIN, BET_MAX]; fallback BOT_BET_XU."""
         if not self.bet_amts: return None
         in_range = self.get_valid_bet_objs()
         if in_range:
@@ -1188,6 +1162,7 @@ class PikafishBot:
         self.send_message("QUICK_PLAY", bytes(data))
 
     def _next_quick_play_target(self):
+        """Xoay vòng có hệ thống qua (room, bet_id)."""
         valid_bets = self.get_valid_bet_objs()
         if not valid_bets:
             room = self.ROOM_LIST[self._search_room_idx % len(self.ROOM_LIST)]
@@ -1277,7 +1252,6 @@ class PikafishBot:
         if self._joining_table:
             if is_block_software_message(msg.data):
                 print("[GAME] 🛡️ Bàn chơi có chế độ Chống Software (blockSoftware=1). Vẫn sẵn sàng thi đấu!")
-
             self._joining_table = False
             self.in_game = True
             self._enter_fail_at = 0.0
@@ -1310,7 +1284,7 @@ class PikafishBot:
             if table_path in active_tables:
                 owner = active_tables[table_path].get("user", "đồng đội")
                 if owner.lower() != USER.lower():
-                    print(f"[AVOID] 🛑 Server gợi ý bàn '{table_path}' nhưng đây là bàn của đồng đội {owner}. HỦY BỎ không vào!")
+                    print(f"[AVOID] 🛑 Server gợi ý bàn '{table_path}' nhưng đây là bàn của đồng đội {owner}. HỦY!")
                     self.in_game = False
                     self._joining_table = False
                     return
@@ -1458,7 +1432,7 @@ class PikafishBot:
 
             if self.fixed_pawn_positions:
                 print(f"[GAME] 🛡️ Bàn đấu có {len(self.fixed_pawn_positions)} chốt bị liệt/khóa! "
-                      f"Bot sẽ tự tạm bật MultiPV={ENGINE_MULTIPV_FIXED_PAWN} để tìm nước thay thế.")
+                      f"Bot sẽ tạm bật MultiPV={ENGINE_MULTIPV_FIXED_PAWN} để tìm nước thay thế.")
             else:
                 print("[GAME] ✅ Bàn không có chốt liệt -> chơi MultiPV=1 (mistboard level 8)")
 
@@ -1648,13 +1622,12 @@ class PikafishBot:
         if len(parts) < 2: return
         best_move = parts[1]
 
-        # ★ Chỉ chạy TrendAnalyzer khi MultiPV > 1 (tức là đang xử lý chốt liệt).
-        # Bàn bình thường (MultiPV=1) -> đi thẳng bestmove của engine.
+        # Khi có chốt liệt -> ưu tiên TrendAnalyzer chọn nước không dính chốt.
         if fixed and ENGINE_MULTIPV_FIXED_PAWN > 1:
             trend_move = self.trend_analyzer.select_best_trend_move()
             if trend_move and best_move not in ["(none)", "0000"] \
                     and not self._move_hits_fixed_pawn(trend_move, fixed):
-                print(f"[RAM-LEARN] 🧠 Thay thế '{best_move}' bằng nước đi tối ưu: '{trend_move}'")
+                print(f"[RAM-LEARN] 🧠 Thay thế '{best_move}' bằng nước tối ưu: '{trend_move}'")
                 best_move = trend_move
 
         if best_move in ["(none)", "0000"]:
@@ -1763,6 +1736,7 @@ class PikafishBot:
                     self._enter_fail_at = 0.0
                     self.leave_table()
 
+                # ★ CHIẾN LƯỢC TÌM BÀN: dò 8 lần -> tạo bàn
                 if (self.connected and self.logged_in and not self.in_game
                         and not self._joining_table):
                     now = time.time()
@@ -1807,6 +1781,7 @@ class PikafishBot:
             except: pass
 
 def acquire_single_instance_lock():
+    """Chặn 2 tiến trình bot cùng tài khoản trên cùng máy."""
     try:
         import fcntl
         path = os.path.join(tempfile.gettempdir(), f"xiangqi_bot_{USER}.lock")
