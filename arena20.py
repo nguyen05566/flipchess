@@ -1,9 +1,15 @@
 #!/usr/bin/env python3
 """
-77 - Xiangqi Bot (gamevh.net) - engine Pikafish
-Tài khoản: arena14
+Xiangqi Bot (gamevh.net) — mainline Pikafish (mistboard level 8)
+Tài khoản: arena20
 
-★ PATCH v2: Cơ chế TÌM BÀN có giới hạn 8 lần.
+Engine tier: pikafish-xiangqi-level-8 (mistboard)
+  - nodes       = 3_000_000   (strength anchor)
+  - movetimeMs  = 4_000        (latency ceiling per move)
+  - REQUIRES pikafish.nnue (EvalFile)
+Source: https://github.com/brianhliou/mistboard (apps/server/src/xiangqi-pikafish-engine.ts)
+
+★ PATCH: Thêm cơ chế TÌM BÀN có giới hạn 8 lần (lấy từ arena14).
   - Xoay vòng có hệ thống qua (room, bet_id) trong [5000, 10000].
   - Đủ 8 lần QUICK_PLAY thất bại -> fallback CREATE_RULE BOT_BET_XU.
   - Reset bộ đếm sau mỗi lần vào bàn / tạo bàn / rời bàn.
@@ -24,7 +30,8 @@ import json
 import random
 
 # ==================== TÀI KHOẢN (KHÔNG CẦN COOKIE) ====================
-CARO_USER_DIRECT = "arena14"
+# Đăng nhập trực tiếp bằng username/password giống các bot nguyen1..nguyen6
+CARO_USER_DIRECT = "arena20"
 CARO_PASSWD_DIRECT = "nhat123456"
 
 def _clean_env(val, default):
@@ -32,9 +39,10 @@ def _clean_env(val, default):
         return str(val).strip()
     return default
 
-USER = _clean_env(os.environ.get("CARO_USER19"), CARO_USER_DIRECT)
-PASSWD = _clean_env(os.environ.get("CARO_PASSWD19"), CARO_PASSWD_DIRECT)
+USER = _clean_env(os.environ.get("ZARO3_USER"), CARO_USER_DIRECT)
+PASSWD = _clean_env(os.environ.get("ZARO3_PASSWD"), CARO_PASSWD_DIRECT)
 
+# Cookie sẽ được tạo tự động sau khi đăng nhập (không hardcode nữa)
 COOKIE = ""
 
 _venv_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'venv', 'lib')
@@ -53,23 +61,54 @@ TOKEN = 0
 GAME_ID = 'xiangqi'
 PLACE_PATH = 'Lobby.xiangqi.0'
 
-ENGINE_MULTIPV = 3
+# Số nhánh engine phân tích song song. Mistboard level 8 chuẩn dùng MultiPV=1
+# (mặc định của Pikafish khi không set option). TrendAnalyzer chỉ hoạt động với
+# MultiPV>1, nhưng user yêu cầu MultiPV=1 đúng chuẩn mistboard level 8.
+# Khi MultiPV=1, logic _get_move_avoiding_fixed sẽ không chọn được nước thay thế
+# (TrendAnalyzer chỉ có 1 line) -> bot đi bestmove của engine dù có dính chốt liệt.
+# Điều này an toàn vì bestmove là nước tối ưu, không gây khả năng bị phát hiện.
+ENGINE_MULTIPV = 1
+
+# === MISTBOARD LEVEL 8 CONFIG (pikafish-xiangqi-level-8) ===
+# Cấu hình sức mạnh theo mistboard xiangqi-pikafish-engine.ts:
+#   nodes: 3_000_000          # strength anchor
+#   movetimeMs: 4_000           # latency ceiling per move
+# Lệnh gửi engine: 'go nodes 3000000 movetime 4000' (whichever binds first).
+PIKAFISH_LEVEL_8_NODES = 3_000_000
+PIKAFISH_LEVEL_8_MOVETIME_MS = 4_000
+
+# Thoi gian TOI THIEU tu luc toi luot den khi gui nuoc di (giay).
+# Engine tim ra nuoc thang/sat cuc se tra loi gan nhu tuc thi; neu di ngay
+# thi nhip di nhanh bat thuong. Chi bu phan CON THIEU - engine da nghi lau
+# hon MIN_MOVE_SECONDS roi thi di luon, khong cong them.
 MIN_MOVE_SECONDS = 2.0
 
+# Kick đối phương sau khi hết ván (giống nguyen1..nguyen6):
+#   "when_lose" - bot THUA thì kick người thắng (đúng hành vi nguyen1..6, mặc định)
+#   "when_win"  - bot THẮNG thì kick người thua
+#   "always"    - kick đối phương ở mọi kết quả
+#   "off"       - không kick
 KICK_MODE = "when_lose"
 KICK_DELAY = 5.0
 
-# ==================== CẤU HÌNH TÌM BÀN ====================
+# ==================== CẤU HÌNH TÌM BÀN / TẠO BÀN ====================
+# ★ Lấy từ arena14: dò bàn tối đa 8 lần rồi fallback tạo bàn.
 BET_MIN = 5000
 BET_MAX = 10000
-BOT_BET_XU = 5000             # mức cược khi fallback tạo bàn
-QUICK_PLAY_MAX_ATTEMPTS = 8   # ★ dò tối đa 8 lần rồi tạo bàn
-BOT_USE_CREATE_TABLE = True   # True: có fallback tạo bàn. False: chỉ dò mãi.
+BOT_BET_XU = 5000                 # mức cược khi fallback tạo bàn
+QUICK_PLAY_MAX_ATTEMPTS = 8       # ★ dò tối đa 8 lần
+BOT_USE_CREATE_TABLE = True       # True: có fallback tạo bàn. False: chỉ dò mãi.
 
+# Chỉ tạo bàn (CREATE_RULE) — KHÔNG dò/find bàn (QUICK_PLAY).
+# Logic 'chuyển xu' (transfer_xu_sync) đã bị bỏ theo yêu cầu user.
 BOT_MATCH_DURATION = '5'
 BOT_TURN_DURATION = '60'
 BOT_ACC_DURATION = '0'
 BOT_BLOCK_SOFTWARE = '0'
+
+# ★ THỜI GIAN CHỜ TRONG BÀN trước khi rời tạo bàn mới (theo yêu cầu user = 5 phút).
+SIT_ALONE_TIMEOUT = 300.0       # 5 phút = 300 giây
+ENTER_FAIL_TIMEOUT = 300.0     # 5 phút = 300 giây
 
 VN_TEN_DAU = [
     "Tuấn", "Minh", "Đức", "Hoàng", "Huy", "Hùng", "Dũng", "Cường", "Long", "Nam",
@@ -102,6 +141,7 @@ VN_TEN_KHONG_DAU = [
 _IDENTITY_SYNCED = False
 
 def generate_dotted_full_name():
+    """Tạo tên tiếng Việt ngẫu nhiên + chèn 1 dấu chấm ngẫu nhiên (marker nhận diện đồng đội)."""
     name = random.choice(VN_TEN_DAU if random.choice([True, False]) else VN_TEN_KHONG_DAU)
     if len(name) >= 2:
         pos = random.randint(1, len(name) - 1)
@@ -109,6 +149,8 @@ def generate_dotted_full_name():
     return name
 
 def sync_profile_name(session):
+    """Đổi FULL_NAME thành tên ngẫu nhiên có dấu chấm (ẩn danh + nhận diện đồng đội)."""
+
     try:
         edit_url = "https://gamevh.net/com/ftl/game/profile/update_profile.jsp"
         page = session.get(edit_url, timeout=15, allow_redirects=True)
@@ -148,7 +190,9 @@ def sync_profile_name(session):
     except Exception as e:
         print(f"[PROFILE] Lỗi cập nhật tên hiển thị: {e}")
 
+
 def sync_random_avatar(session):
+    """Đổi avatar ngẫu nhiên giống cơ chế nguyen* (có thể phát sinh phí xu)."""
     try:
         profile_url = "https://gamevh.net/com/ftl/game/profile/player_profile.jsp"
         before = session.get(profile_url, timeout=15)
@@ -192,6 +236,8 @@ def sync_random_avatar(session):
         print(f"[PROFILE] Lỗi đổi avatar: {e}")
 
 def is_block_software_message(raw_bytes):
+
+    """Kiểm tra xem dữ liệu gói tin bàn có cấu hình Chống Software (blockSoftware=1/true) hay không."""
     try:
         idx = raw_bytes.find(b"blockSoftware")
         if idx != -1:
@@ -205,6 +251,7 @@ def is_block_software_message(raw_bytes):
 ACTIVE_TABLES_FILE = os.path.join(tempfile.gettempdir(), "zaro_active_tables.json")
 
 def get_active_bot_tables():
+    """Đọc danh sách các bàn đang do bot gia đình tạo hoặc đang ngồi."""
     try:
         if not os.path.exists(ACTIVE_TABLES_FILE):
             return {}
@@ -219,6 +266,7 @@ def get_active_bot_tables():
         return {}
 
 def register_bot_table(table_path, user):
+    """Đăng ký bàn do bot này đang tạo/ngồi vào tập tin dùng chung."""
     if not table_path: return
     try:
         data = get_active_bot_tables()
@@ -228,6 +276,7 @@ def register_bot_table(table_path, user):
     except Exception: pass
 
 def unregister_bot_table(table_path):
+    """Hủy đăng ký bàn khi bot rời bàn."""
     if not table_path: return
     try:
         data = get_active_bot_tables()
@@ -238,6 +287,7 @@ def unregister_bot_table(table_path):
     except Exception: pass
 
 def fetch_session_info():
+    """Đăng nhập bằng USER/PASSWD (không dùng cookie hardcode) và lấy token/nickname/playerId."""
     global COOKIE, TOKEN, CURRENT_PLAYER_NICKNAME, CURRENT_PLAYER_ID, PLACE_PATH, _IDENTITY_SYNCED
     try:
         session = requests.Session()
@@ -248,8 +298,10 @@ def fetch_session_info():
             "Accept-Language": "vi-VN,vi;q=0.9,en;q=0.7",
         })
 
+        # B1: mở trang login để lấy JSESSIONID
         session.get(LOGIN_URL, timeout=20)
 
+        # B2: POST đăng nhập
         resp = session.post(
             LOGIN_URL, timeout=20,
             data={"redirect": "/", "USER_NAME": USER, "PASSWORD": PASSWD,
@@ -262,11 +314,13 @@ def fetch_session_info():
             print(f"[SESSION] Đăng nhập thất bại (sai tài khoản/mật khẩu?): {resp.url}")
             return False
 
+        # Đổi tên hiển thị (có dấu chấm) + avatar ngẫu nhiên: chỉ 1 lần mỗi lần chạy
         if not _IDENTITY_SYNCED:
             _IDENTITY_SYNCED = True
             sync_profile_name(session)
             sync_random_avatar(session)
 
+        # B3: vào trang game để lấy token / nickname / playerId
         game_resp = session.get(GAME_URL, timeout=20)
         page_html = game_resp.text
 
@@ -290,6 +344,7 @@ def fetch_session_info():
         if pm:
             PLACE_PATH = pm.group(1)
 
+        # B4: dựng cookie từ session vừa đăng nhập
         COOKIE = "; ".join(f"{k}={v}" for k, v in session.cookies.items())
 
         if CURRENT_PLAYER_NICKNAME != USER:
@@ -386,6 +441,9 @@ class XiangqiBoardTracker:
     def reset(self):
         self.fen = self.INITIAL_FEN
         self.move_history = []
+        # Mốc để nạp engine: base_fen + các nước kể từ mốc. Giữ được danh sách nước
+        # là engine mới phát hiện được LẶP NƯỚC (chiếu/đuổi liên tục = THUA theo
+        # luật cờ tướng). Bản trước nạp FEN trần, engine mù về lặp nước -> tự sát.
         self.base_fen = self.INITIAL_FEN.split(' ')[0]
         self.base_side = 'w'
         self.moves_since_base = []
@@ -394,6 +452,14 @@ class XiangqiBoardTracker:
         self.is_my_turn = False
         self.is_playing = False
         self.is_red = None
+    # ---------------------------------------------------------------
+    # TOẠ ĐỘ: số ô (position sid) của server là TUYỆT ĐỐI, giống nhau cho cả
+    # hai bên. Client chính thức khai báo  positions[j*9+i] = {sid: j*9+i}
+    # và setRedInBottom() chỉ XOAY HÌNH HIỂN THỊ chứ không đổi số ô.
+    # Code cũ lật hàng (9 - row) khi bot cầm quân ĐEN -> sai ô -> server từ
+    # chối mọi nước -> bot đứng hình rồi thua. Bỏ hẳn phép lật.
+    #   sid = row * 9 + col (row 0 = phía ĐỎ);  engine: file='a'+col, rank=row
+    # ---------------------------------------------------------------
     def pos_to_engine_move(self, source_pos, target_pos):
         s_col, s_row = source_pos % 9, source_pos // 9
         t_col, t_row = target_pos % 9, target_pos // 9
@@ -404,6 +470,7 @@ class XiangqiBoardTracker:
         return s_row * 9 + s_col, t_row * 9 + t_col
     @staticmethod
     def _apply_move_to_fen(board_fen, move):
+        """Áp 1 nước vào bàn cờ (cờ tướng không có nhập thành/phong cấp nên chỉ là dời quân)."""
         try:
             grid = []
             for r in board_fen.split('/'):
@@ -437,6 +504,14 @@ class XiangqiBoardTracker:
             return None
 
     def get_current_fen(self):
+        """Nạp cho engine: mốc thế cờ + các nước kể từ mốc.
+
+        - Bình thường: giữ nguyên danh sách nước để engine biết thế cờ đã lặp lại
+          bao nhiêu lần (cờ tướng: chiếu/đuổi liên tục là THUA, engine phải biết).
+        - Khi đối phương BỎ LƯỢT: chuỗi luân phiên đứt, không diễn tả được bằng
+          danh sách nước -> dựng thế hiện tại làm MỐC MỚI rồi ghi thẳng bên đi.
+          Chỉ mất lịch sử lặp từ thời điểm đó, không sai bên đi.
+        """
         my_side = 'w' if self.is_red else 'b'
         turn_side = my_side if self.is_my_turn else ('b' if my_side == 'w' else 'w')
         n = len(self.moves_since_base)
@@ -459,6 +534,7 @@ class XiangqiBoardTracker:
         return f"{cur} {turn_side}", []
 
     def set_base(self, board_fen, side='w'):
+        """Chốt mốc thế cờ (gọi khi vào ván mới)."""
         self.fen = board_fen
         self.base_fen = board_fen.split(' ')[0] if ' ' in board_fen else board_fen
         self.base_side = side
@@ -472,9 +548,10 @@ class XiangqiBoardTracker:
     def set_my_slot(self, slot_id, first_turn_slot_id):
         self.my_slot_id = slot_id
         self.first_turn_slot_id = first_turn_slot_id
-        self.is_red = (self.my_slot_id == first_turn_slot_id)
+        self.is_red = (self.my_slot_id == self.first_turn_slot_id)
 
 class TrendAnalyzer:
+    """Bộ não phân tích dữ liệu RAM: Hỗ trợ quét kép Sát cục (Mate) và Điểm số xu hướng (CP)"""
     def __init__(self):
         self.pv_ram_cache = {}
         self.info_regex = re.compile(r"info .* score cp (-?\d+) .* pv (.+)")
@@ -484,6 +561,7 @@ class TrendAnalyzer:
         self.pv_ram_cache.clear()
 
     def parse_line(self, line_str):
+        # 1. Quét thế trận sát cục (Mate) trước để tránh Bot đi vòng vo khi sắp thắng
         mate_match = self.mate_regex.search(line_str)
         if mate_match:
             mate_score = int(mate_match.group(1))
@@ -497,6 +575,7 @@ class TrendAnalyzer:
                 }
                 return
 
+        # 2. Nếu không có sát cục, tiến hành phân tích điểm cp thông thường
         match = self.info_regex.search(line_str)
         if match:
             score = int(match.group(1))
@@ -512,14 +591,19 @@ class TrendAnalyzer:
     def select_best_trend_move(self):
         if not self.pv_ram_cache:
             return None
+
+        # ƯU TIÊN TUYỆT ĐỐI: Có nhánh báo sát cục thắng (mate dương), xuất quân dứt điểm ngay!
         for move, data in self.pv_ram_cache.items():
             if data["mate_in"] is not None and data["mate_in"] > 0:
                 print(f"[RAM-MATE] 🔥 Phát hiện nhánh sát cục tuyệt đối! Dứt điểm ngay: {move}")
                 return move
+
         best_move = None
         avg_score = sum(d["current_score"] for d in self.pv_ram_cache.values()) / len(self.pv_ram_cache)
         is_negative = avg_score < 0
+
         if is_negative:
+            # THẾ YẾU (ĐIỂM ÂM): Chọn nhánh có điểm âm thấp nhất (giảm thiểu suy thoái)
             max_recovery = -999999
             for move, data in self.pv_ram_cache.items():
                 recovery_rate = data["current_score"]
@@ -528,6 +612,7 @@ class TrendAnalyzer:
                     best_move = move
             print(f"[RAM-LEARN] Đang lép vế ({int(avg_score)}). Ép chọn nước phòng thủ tốt nhất: {best_move}")
         else:
+            # THẾ MẠNH (ĐIỂM DƯƠNG): Chọn nhánh có tốc độ bứt phá điểm cao nhất
             max_growth = -999999
             for move, data in self.pv_ram_cache.items():
                 growth_rate = data["current_score"]
@@ -535,6 +620,7 @@ class TrendAnalyzer:
                     max_growth = growth_rate
                     best_move = move
             print(f"[RAM-LEARN] Đang ưu thế (+{int(avg_score)}). Ép chọn nước tăng điểm tốt nhất: {best_move}")
+
         return best_move
 
 class PikafishBot:
@@ -552,7 +638,7 @@ class PikafishBot:
         self._QUICK_PLAY_INTERVAL = 3.0
         self.ROOM_LIST = ["0", "1", "2", "3"]
         self.player_names = {}
-        # Lệch phòng khởi đầu theo index của bot
+        # Lệch phòng khởi đầu theo index của bot để phân tán các bot ra các phòng khác nhau
         _bot_num = re.search(r"\d+", USER)
         _offset = int(_bot_num.group(0)) if _bot_num else 0
         self._search_room_idx = _offset % len(self.ROOM_LIST)
@@ -587,17 +673,41 @@ class PikafishBot:
         self._init_engine()
 
     def _init_engine(self):
+        # Binary candidates theo thứ tự ưu tiên (matches mistboard xiangqi-pikafish-engine.ts):
+        _script_dir = os.path.dirname(os.path.abspath(__file__))
         possible_paths = [
+            os.environ.get("MISTBOARD_PIKAFISH_XIANGQI_PATH"),
+            os.path.join(_script_dir, "pikafish"),
+            os.path.join(_script_dir, "pikafish_x86_64"),
             os.path.expanduser("~/pikafish"),
             os.path.expanduser("~/Android/pikafish-armv8"),
             "/data/data/com.termux/files/home/pikafish",
-            "./pikafish"
+            "/usr/local/bin/pikafish",
+            "/app/bin/pikafish",
         ]
+        possible_paths = [p for p in possible_paths if p]
         pikafish_path = next((p for p in possible_paths if os.path.isfile(p) and os.access(p, os.X_OK)), None)
         if not pikafish_path:
             print("[ENGINE] ❌ KHÔNG TÌM THẤY pikafish! Đã tìm ở: " + ", ".join(possible_paths))
             print("[ENGINE] ❌ Bot sẽ KHÔNG đánh được nước nào. Hãy cài engine trước khi chạy.")
             return
+
+        # NNUE net candidates (mainline Pikafish REFUSES to evaluate without EvalFile):
+        nnue_candidates = [
+            os.environ.get("MISTBOARD_PIKAFISH_XIANGQI_NET"),
+            os.path.join(_script_dir, "pikafish.nnue"),
+            os.path.join(os.path.dirname(pikafish_path), "pikafish.nnue"),
+            os.path.expanduser("~/pikafish.nnue"),
+        ]
+        nnue_candidates = [p for p in nnue_candidates if p]
+        nnue_path = next((p for p in nnue_candidates if os.path.isfile(p)), None)
+        if not nnue_path:
+            print("[ENGINE] ❌ KHÔNG TÌM THẤY pikafish.nnue! Mainline Pikafish yêu cầu NNUE net.")
+            print("[ENGINE] ❌ Đã tìm ở: " + ", ".join(nnue_candidates))
+            print("[ENGINE] ❌ Set env MISTBOARD_PIKAFISH_XIANGQI_NET hoặc đặt pikafish.nnue cùng thư mục.")
+            return
+        print(f"[ENGINE] 🎯 Pikafish binary = {pikafish_path}")
+        print(f"[ENGINE] 🎯 Pikafish NNUE net = {nnue_path}")
 
         try:
             self._engine_proc = subprocess.Popen(
@@ -639,24 +749,23 @@ class PikafishBot:
             threading.Thread(target=consume_stdout_and_filter, args=(self._engine_proc,), daemon=True).start()
 
             self._fsf_cmd("uci")
+            # Chừa ít nhất 1 nhân cho luồng WebSocket, nếu không pong/heartbeat bị trễ
+            # và server cắt kết nối ngay giữa ván.
             _threads = max(1, min(4, (os.cpu_count() or 2) - 1))
             self._fsf_cmd(f"setoption name Threads value {_threads}")
             self._fsf_cmd("setoption name Hash value 256")
+
             self._fsf_cmd(f"setoption name MultiPV value {ENGINE_MULTIPV}")
 
-            time.sleep(1)
-
-            nnue_path = os.path.expanduser("~/pikafish.nnue")
-            if not os.path.isfile(nnue_path):
-                nnue_path = os.path.join(os.path.dirname(pikafish_path), "pikafish.nnue")
-            if os.path.isfile(nnue_path):
-                self._fsf_cmd(f"setoption name EvalFile value {nnue_path}")
-                self._fsf_cmd("setoption name UseNNUE value true")
-            else:
-                self._fsf_cmd("setoption name UseNNUE value false")
+            # ★ MAINLINE PIKAFISH REQUIRES EvalFile — engine sẽ không đánh nếu thiếu net.
+            # (matches mistboard xiangqi-pikafish-engine.ts init: 'setoption name EvalFile value <net>')
+            self._fsf_cmd(f"setoption name EvalFile value {nnue_path}")
+            self._fsf_cmd("setoption name UseNNUE value true")
+            # ucinewgame trước isready — reset state giữa các ván (mistboard convention)
+            self._fsf_cmd("ucinewgame")
             self._fsf_cmd("isready")
             self.engine = True
-            print(f"[ENGINE] ✅ Sẵn sàng | Threads={_threads} | MultiPV={ENGINE_MULTIPV}"
+            print(f"[ENGINE] ✅ Sẵn sàng (mistboard level 8) | Threads={_threads} | MultiPV={ENGINE_MULTIPV}"
                   + ("" if ENGINE_MULTIPV > 1 else " (dùng thẳng bestmove của engine)"))
         except Exception as e:
             print(f"[ENGINE] ❌ Lỗi khởi tạo: {e}")
@@ -676,8 +785,10 @@ class PikafishBot:
             if moves: pos_cmd += " moves " + " ".join(moves)
             self._fsf_cmd(pos_cmd)
 
-            self._fsf_cmd("go movetime 3200")
-            return self._read_bestmove(timeout=4.2)
+            # ★ MISTBOARD LEVEL 8: 'go nodes 3000000 movetime 4000' (whichever binds first).
+            self._fsf_cmd(f"go nodes {PIKAFISH_LEVEL_8_NODES} movetime {PIKAFISH_LEVEL_8_MOVETIME_MS}")
+            # timeout 5.5s = movetime 4s + 1.5s buffer cho net spawn + bestmove emit
+            return self._read_bestmove(timeout=5.5)
         except Exception as e: print(f"[ENGINE] Lỗi tính toán: {e}")
         return None
 
@@ -697,10 +808,18 @@ class PikafishBot:
                 if self._latest_bestmove:
                     return self._latest_bestmove
                 break
-            time.sleep(0.02)
+            time.sleep(0.02) # Phản xạ luồng đọc siêu tốc
         return None
 
     def _get_move_avoiding_fixed(self, fen, moves, fixed_positions):
+        """Tìm nước đi không dính chốt cố định.
+
+        Chiến lược:
+        1. Tạm bật MultiPV=3 để engine phân tích nhiều nước thay thế
+        2. Dùng TrendAnalyzer chọn nước tốt nhất không dính chốt
+        3. Nếu vẫn dính -> retry (engine sẽ tránh nước cũ)
+        """
+        # Tạm bật MultiPV=3 để có nước thay thế
         original_multipv = ENGINE_MULTIPV
         if ENGINE_MULTIPV < 3:
             self._fsf_cmd("setoption name MultiPV value 3")
@@ -717,10 +836,11 @@ class PikafishBot:
 
             self._latest_bestmove = None
             self._mate_status = None
-            self._fsf_cmd("go movetime 2500")
+            # ★ MISTBOARD LEVEL 8: dùng cùng node budget + movetime ceiling.
+            self._fsf_cmd(f"go nodes {PIKAFISH_LEVEL_8_NODES} movetime {PIKAFISH_LEVEL_8_MOVETIME_MS}")
 
             _wait_start = time.time()
-            while time.time() - _wait_start < 3.5:
+            while time.time() - _wait_start < 5.5:
                 if self._latest_bestmove: break
                 time.sleep(0.05)
 
@@ -737,10 +857,12 @@ class PikafishBot:
                 result = self._latest_bestmove
                 break
 
+            # Nước tốt nhất không dính chốt -> dùng luôn
             if not self._move_hits_fixed_pawn(best_move, fixed_positions):
                 result = self._latest_bestmove
                 break
 
+            # Nước dính chốt -> thử TrendAnalyzer chọn nước thay thế
             print(f"[ENGINE] ⚠️ Bestmove {best_move} dính chốt cố định (lần {attempt + 1})")
             alt_move = self.trend_analyzer.select_best_trend_move()
             if alt_move and not self._move_hits_fixed_pawn(alt_move, fixed_positions):
@@ -748,9 +870,11 @@ class PikafishBot:
                 result = f"bestmove {alt_move}"
                 break
 
+            # TrendAnalyzer cũng dính chốt -> loại nước này, tính lại
             print(f"[ENGINE] TrendAnalyzer cũng dính chốt, tính lại...")
             excluded_moves.add(best_move)
 
+        # Khôi phục MultiPV gốc
         if original_multipv < 3:
             self._fsf_cmd(f"setoption name MultiPV value {original_multipv}")
 
@@ -761,6 +885,7 @@ class PikafishBot:
         return result
 
     def _move_hits_fixed_pawn(self, move_str, fixed_positions):
+        """Kiểm tra nước đi có bắt đầu từ vị trí chốt cố định không."""
         if not fixed_positions or len(move_str) < 4:
             return False
         try:
@@ -780,6 +905,8 @@ class PikafishBot:
             on_error=self._on_error, on_close=self._on_close,
             header={"Origin": "https://gamevh.net"}
         )
+        # ping_timeout=10 cũ khiến engine ăn hết CPU 3.2s/nước -> pong trả chậm -> tự ngắt
+        # giữa ván. Bỏ pong-timeout, thay bằng kiểm tra liveness theo dữ liệu nhận được.
         self.ws_thread = threading.Thread(
             target=lambda: self.ws.run_forever(ping_interval=30, ping_timeout=None),
             daemon=True)
@@ -807,6 +934,8 @@ class PikafishBot:
             print(f"[WS] ⚠️ MẤT KẾT NỐI GIỮA VÁN (code={code}, msg={msg}) -> mất bàn, sẽ phải tạo bàn mới")
         else:
             print(f"[WS] Đóng kết nối (code={code}, msg={msg})")
+        # Nếu vừa kết nối đã đứt ngay (<60s) thì coi là rớt liên tiếp -> cần giãn nhịp,
+        # tránh đăng nhập dồn dập tạo ra hàng loạt phiên/bàn rác trên server.
         if self._connected_since and time.time() - self._connected_since < 60:
             self._reconnect_streak += 1
         else:
@@ -855,11 +984,13 @@ class PikafishBot:
                 if isinstance(ba.get("value"), int) and BET_MIN <= ba["value"] <= BET_MAX]
 
     def is_family_bot(self, name):
+        """Nhận diện bot đồng đội: tên hiển thị chứa dấu chấm '.' (do chính bot đặt)."""
         if not name or name.strip().lower() == CURRENT_PLAYER_NICKNAME.lower():
             return False
         return "." in name
 
     def leave_table(self):
+        """Rời bàn hiện tại và quay về sảnh để tiếp tục dò bàn."""
         if self.board.is_playing:
             print("[TABLE] ⚠️ Đang trong ván đấu -> Khóa không rời bàn cho đến khi GAMEOVER!")
             return
@@ -880,6 +1011,7 @@ class PikafishBot:
         self.send_enter_place(PLACE_PATH)
 
     def _lower_bet_level(self):
+        """Giảm mức cược xuống 1 bậc rồi tạo bàn mới. Nếu đã ở mức thấp nhất thì giữ nguyên."""
         global BOT_BET_XU
         if not self.bet_amts:
             print("[BET] ⚠️ Chưa có danh sách mức cược, gửi yêu cầu lấy lại...")
@@ -968,16 +1100,20 @@ class PikafishBot:
         self.send_message("PLAY", bytes(data))
 
     def opponent_player_id(self):
+        """playerId của người ngồi ghế đối diện (nếu biết)."""
         for sid, pid in self.slot_players.items():
             if pid and pid != CURRENT_PLAYER_ID and sid != self.board.my_slot_id:
                 return pid
         return None
 
     def send_kick_player(self, player_id):
+        """Đuổi người chơi khỏi bàn - opcode 410 + int64 playerId (giống nguyen1..6)."""
         self._pending_kick_id = player_id
         data = bytearray()
         data.extend(struct.pack('>q', int(player_id)))
         print(f"[KICK] Gửi KICK_PLAYER playerId={player_id}")
+        # Dùng ĐÚNG opcode số 410 như web client và nguyen1..6 (không gửi tên ASCII),
+        # vì đây là lệnh hiếm, gửi sai dạng là server bỏ qua im lặng.
         self.send_message(410, bytes(data))
 
     def send_ready(self, is_ready=1):
@@ -1058,6 +1194,8 @@ class PikafishBot:
             self._resolved_bet_id = None
             self.send_list_bet_amt()
         else:
+            # Gói 401 ngẫu nhiên server đẩy về khi bot ĐANG NỒI TRONG BÀN (người khác ra/vào).
+            # Bỏ qua hoàn toàn, KHÔNG ĐỤNG vào self.in_game và KHÔNG reset board!
             pass
 
     def _handle_quick_play_response(self, msg):
@@ -1081,13 +1219,13 @@ class PikafishBot:
             self._table_path = table_path; self._table_path_ts = time.time()
             register_bot_table(table_path, USER)
 
-            print(f"[SEARCH] ✅ Tìm thấy bàn: {table_path}. Đang vào...")
+            print(f"[SEARCH] ✅ Tìm thấy bàn người dùng thực: {table_path}. Đang vào bàn...")
             def async_join():
                 time.sleep(0.5)
                 self.send_enter_place(path=table_path, mode=1)
             threading.Thread(target=async_join, daemon=True).start()
         else:
-            print(f"[SEARCH] ℹ️ Không có bàn trống (status={status}). Tiếp tục dò...")
+            print(f"[SEARCH] ℹ️ Phòng/cược vừa tìm không có bàn trống (status={status}). Tiếp tục chuyển phòng...")
             self._joining_table = False
 
     def _handle_list_bet_amt_response(self, msg):
@@ -1115,7 +1253,7 @@ class PikafishBot:
             self._sit_alone_since = time.time()
             self._table_path = table_path; self._table_path_ts = time.time()
             register_bot_table(table_path, USER)
-            print(f"[CREATE] 🎉 Tạo bàn thành công: {table_path}. Đang vào...")
+            print(f"[CREATE] 🎉 Tạo bàn thành công: {table_path}. Đang vào bàn chờ người chơi...")
             def async_join():
                 time.sleep(0.5)
                 self.send_enter_place(path=table_path, mode=1)
@@ -1134,7 +1272,7 @@ class PikafishBot:
                 self.player_names[pid] = name
                 print(f"[PLAYER] 👤 Người chơi '{name}' (id={pid}) vào bàn/phòng (level={place_level})")
                 if not self.board.is_playing and self.is_family_bot(name) and self.opponent_player_id() == pid:
-                    print(f"[AVOID] ⚠️ Phát hiện đồng đội '{name}' ở ghế đối diện! Rời bàn + giảm cược...")
+                    print(f"[AVOID] ⚠️ Phát hiện đồng đội '{name}' ở ghế đối diện! Rời bàn ngay + giảm cược...")
                     self.leave_table()
                     self._lower_bet_level()
         except Exception: pass
@@ -1262,6 +1400,11 @@ class PikafishBot:
 
     def _handle_play_response(self, msg):
         if msg.read_byte() != 0:
+            # Server từ chối nước đi -> tự tính lại (không chờ SET_TURN mới).
+            # KHÔNG được pop lịch sử ở đây! Nước bị từ chối chưa bao giờ được ghi
+            # (chỉ ghi khi nhận gói MOVE), nên pop sẽ xoá nhầm nước THẬT của đối
+            # thủ -> bàn cờ trong đầu bot lệch với bàn thật -> đi những nước như
+            # tự sát ở giữa và cuối trận.
             self.board.is_my_turn = True
             self._played_this_turn = False
             self._play_reject_count = getattr(self, '_play_reject_count', 0) + 1
@@ -1273,6 +1416,10 @@ class PikafishBot:
             self._play_reject_count = 0
 
     def _handle_set_turn(self, msg):
+        """SET_TURN theo đúng client gamevh:
+             byte slotId, short turnTimeout, short playerRemainDuration
+           slotId == -2 là bộ đếm ngược "Chuẩn bị/Bắt đầu", KHÔNG phải lượt đi.
+        """
         try:
             slot_id = msg.read_byte()
             try:
@@ -1280,7 +1427,7 @@ class PikafishBot:
             except Exception:
                 turn_timeout = 0
             if slot_id == -2:
-                return
+                return                      # chỉ là đếm ngược trước ván
             if slot_id == -1 or not self.board.is_playing:
                 return
             self.turn_timeout = turn_timeout
@@ -1292,6 +1439,9 @@ class PikafishBot:
             self._turn_started_at = time.time()
             if not was_my_turn:
                 self._played_this_turn = False
+            # ĐỐI PHƯƠNG BỎ LƯỢT: server gửi lại SET_TURN cho CÙNG một lượt, không
+            # kèm MOVE nào. Vì vậy phải tính nước MỖI KHI nhận SET_TURN trỏ vào bot
+            # (chỉ trừ lúc đang tính dở) - kể cả khi lịch sử nước đi không đổi.
             if not self._thinking:
                 threading.Thread(target=self._make_auto_move, daemon=True).start()
         except Exception as e:
@@ -1308,6 +1458,7 @@ class PikafishBot:
             if status == 0: print(f"[KICK] ✅ Đã đuổi playerId={pid} khỏi bàn. {content}")
             else:           print(f"[KICK] ❌ Đuổi playerId={pid} thất bại (status={status}): {content}")
             return
+        # Không phải phản hồi của mình -> chính bot bị đuổi
         print(f"[KICK] ⚠️ Bot bị đuổi khỏi bàn: {content}")
         self.in_game = False
         self._joining_table = False
@@ -1315,6 +1466,7 @@ class PikafishBot:
         self.board.reset()
 
     def _handle_gameover(self, msg):
+        # --- Đọc kết quả từng ghế: count(u8) + [slot(i8), result(i8), int64] ---
         my_result, results = None, {}
         try:
             count = msg.read_byte()
@@ -1333,11 +1485,13 @@ class PikafishBot:
         elif my_result is None: print("[GAME] 🏁 Trận đấu kết thúc.")
         else: print("[GAME] 🏁 Trận đấu kết thúc. >>> HOÀ <<<")
 
+        # --- Có kick đối phương không? ---
         should_kick = (KICK_MODE == "always"
                        or (KICK_MODE == "when_lose" and bot_lost)
                        or (KICK_MODE == "when_win" and bot_won))
         victim = None
         if should_kick:
+            # Ưu tiên ghế được GAMEOVER đánh dấu, fallback sang ghế đối diện đang biết.
             want = (1, 11) if KICK_MODE == "when_lose" else (2, 4, 12)
             target_sid = next((sid for sid, res in results.items()
                                if sid != self.board.my_slot_id and res in want), None)
@@ -1403,20 +1557,29 @@ class PikafishBot:
         if len(parts) < 2: return
         best_move = parts[1]
 
+        # ÁP DỤNG BỘ LỌC TỐI ƯU XU HƯỚNG/SÁT CỤC TỪ RAM
+        # CHỈ khi MultiPV > 1. Với MultiPV=1, pv_ram_cache chỉ chứa nước đầu của từng
+        # vòng lặp depth (nông -> sâu); chọn theo điểm cao nhất có thể lôi ra một nước
+        # ở depth nông và ghi đè lên bestmove cuối cùng của engine => đi yếu hơn.
         if ENGINE_MULTIPV > 1:
             trend_move = self.trend_analyzer.select_best_trend_move()
             if trend_move and best_move not in ["(none)", "0000"]:
                 print(f"[RAM-LEARN] 🧠 Thay thế '{best_move}' bằng nước đi tối ưu: '{trend_move}'")
                 best_move = trend_move
 
+        # XỬ LÝ KỊCH BẢN KHI HẾT NƯỚC ĐI CỜ TÀN
         if best_move in ["(none)", "0000"]:
             print("\n[HỆ THỐNG TÀN CUỘC] ⚠️ Pikafish báo: bestmove (none) - Hết nước hợp lệ.")
             self.board.is_my_turn = False
             return
 
+        # Gửi nước đi hợp lệ lên hệ thống GameVH
         if best_move:
             try:
                 source_pos, target_pos = self.board.engine_move_to_pos(best_move)
+                # Cho du MIN_MOVE_SECONDS ke tu luc toi luot (chi bu phan con
+                # thieu). _turn_started_at = 0 nghia la chua ghi nhan duoc moc
+                # -> coi nhu vua toi luot va cho tron.
                 _turn_start = getattr(self, '_turn_started_at', 0.0) or time.time()
                 _remain = MIN_MOVE_SECONDS - (time.time() - _turn_start)
                 if _remain > 0:
@@ -1441,32 +1604,24 @@ class PikafishBot:
 
     def run(self):
         print("[BOT] Khởi chạy hệ thống giám sát tự động...")
-
-        # ===== CHUYỂN XU 50% NGAY KHI KHỞI ĐỘNG =====
-        print("[TRANSFER] 🔄 Chuyển 50% xu cho xxxx trước khi vào bàn...")
-        try:
-            from transfer_xu_bot import transfer_xu_sync
-            if transfer_xu_sync(USER, PASSWD, dest_id=65692738, percent=50):
-                print("[TRANSFER] ✅ Chuyển xu thành công!")
-            else:
-                print("[TRANSFER] ⚠️ Chuyển xu thất bại, tiếp tục chạy bot...")
-        except ImportError as ie:
-            print(f"[TRANSFER] ❌ Không tìm thấy transfer_xu_bot: {ie}")
-        except Exception as e:
-            print(f"[TRANSFER] ❌ Lỗi chuyển xu: {e}")
-        print("[TRANSFER] ✅ Hoàn tất, bắt đầu vào bàn chơi...")
-        # ===== END CHUYỂN XU =====
-
+        print(f"[BOT] ⚙️ Engine: mainline Pikafish (mistboard level 8, MultiPV={ENGINE_MULTIPV})")
         print(f"[BOT] 🎯 Chiến lược: Dò bàn {BET_MIN}-{BET_MAX} xu tối đa "
               f"{QUICK_PLAY_MAX_ATTEMPTS} lần, sau đó tạo bàn {BOT_BET_XU} xu")
+        print(f"[BOT] ⏱️ Chờ trong bàn {int(SIT_ALONE_TIMEOUT)}s trước khi rời tìm bàn mới")
+
+        # ★ LOGIC "CHUYỂN XU" (transfer_xu_sync) ĐÃ BỊ BỎ THEO YÊU CẦU USER.
+        # Trước đây bot chuyển 50% xu cho tài khoản khác ngay khi khởi động —
+        # đã bỏ để giữ toàn bộ xu cho chính tài khoản bot.
 
         while True:
             try:
                 now_ts = time.time()
+                # (a) Không nhận được BẤT KỲ gói nào trong 120s -> kết nối đã chết thật
                 if self.connected and now_ts - self.last_recv_timestamp > 120:
                     print("[WS] Không nhận dữ liệu 120s -> coi như chết, kết nối lại")
                     if self.ws: self.ws.close()
                     time.sleep(2)
+                # (b) Đang trong ván mà 300s không có nước đi nào -> mới cắt
                 elif self.connected and self.board.is_playing:
                     if now_ts - self.last_action_timestamp > 300:
                         print("[WS] Ván treo 300s không có nước đi -> kết nối lại")
@@ -1476,7 +1631,8 @@ class PikafishBot:
                 if not self.connected:
                     if self._reconnect_streak >= 3:
                         print("[BOT] ⚠️ Bị ngắt kết nối liên tục ngay sau khi đăng nhập.")
-                        print(f"[BOT] ⚠️ Nhiều khả năng tài khoản {USER} đang được ĐĂNG NHẬP Ở NƠI KHÁC.")
+                        print(f"[BOT] ⚠️ Nhiều khả năng tài khoản {USER} đang được ĐĂNG NHẬP Ở NƠI KHÁC "
+                              "(GitHub Actions, máy khác, điện thoại...). Server chỉ cho 1 phiên nên hai bên đá nhau.")
                     if self._reconnect_streak > 0:
                         delay = min(60, 5 * (2 ** min(self._reconnect_streak - 1, 4)))
                         print(f"[WS] Rớt liên tiếp lần {self._reconnect_streak} -> chờ {delay}s rồi đăng nhập lại")
@@ -1496,6 +1652,7 @@ class PikafishBot:
                     self.start_keep_alive()
                     time.sleep(2)
 
+                # Tới lượt bot nhưng 12s vẫn chưa gửi được nước nào -> tự tính lại
                 if (self.board.is_playing and self.board.is_my_turn and not self._thinking
                         and self._turn_started_at
                         and time.time() - self._turn_started_at > 12
@@ -1504,9 +1661,12 @@ class PikafishBot:
                     self._turn_started_at = time.time()
                     threading.Thread(target=self._make_auto_move, daemon=True).start()
 
+                # KHÓA CHẶT: Khi đang trong ván đấu, tuyệt đối KHÔNG gửi lệnh tìm/tạo/rời bàn!
                 if self.board.is_playing:
                     self._sit_alone_since = None
                 else:
+                    # ★ Đếm ngược SIT_ALONE_TIMEOUT (5 phút) khi ĐANG Ở TRONG BÀN
+                    # nhưng KHÔNG TRONG VÁN ĐẤU.
                     if self.in_game and not self._joining_table:
                         opp_id = self.opponent_player_id()
                         if opp_id is None:
@@ -1514,24 +1674,21 @@ class PikafishBot:
                                 self._sit_alone_since = time.time()
                             else:
                                 elapsed = time.time() - self._sit_alone_since
-                                if elapsed >= 30.0:
+                                if elapsed >= SIT_ALONE_TIMEOUT:
                                     print(f"[TABLE] ⏱️ Đã chờ {int(elapsed)}s không có người chơi -> Rời bàn tìm bàn mới")
                                     self.leave_table()
                         else:
                             self._sit_alone_since = None
 
+                # ★ Sau ENTER_PLACE lỗi: đếm ngược ENTER_FAIL_TIMEOUT (5 phút)
                 if (self._enter_fail_at and self.in_game and not self.board.is_playing
-                        and time.time() - self._enter_fail_at > 60):
-                    print("[TABLE] Chờ 60s không vào được ván nào -> bỏ bàn cũ, tìm bàn mới")
+                        and time.time() - self._enter_fail_at > ENTER_FAIL_TIMEOUT):
+                    print(f"[TABLE] Chờ {int(ENTER_FAIL_TIMEOUT)}s không vào được ván nào -> bỏ bàn cũ, tìm bàn mới")
                     self._enter_fail_at = 0.0
                     self.leave_table()
 
                 # ============================================================
                 # ★ CHIẾN LƯỢC: DÒ BÀN TỐI ĐA 8 LẦN, SAU ĐÓ TẠO BÀN.
-                #   B1. Chưa có bet list -> yêu cầu LIST_BET_AMT.
-                #   B2. _quick_play_attempts < 8 -> gửi QUICK_PLAY với (room, bet)
-                #       xoay vòng trong [BET_MIN, BET_MAX].
-                #   B3. Đủ 8 lần -> fallback CREATE_RULE BOT_BET_XU.
                 # ============================================================
                 if (self.connected and self.logged_in and not self.in_game
                         and not self._joining_table):
@@ -1577,6 +1734,7 @@ class PikafishBot:
             except: pass
 
 def acquire_single_instance_lock():
+    """Chặn chạy 2 tiến trình bot cùng tài khoản trên cùng máy."""
     try:
         import fcntl
         path = os.path.join(tempfile.gettempdir(), f"xiangqi_bot_{USER}.lock")
