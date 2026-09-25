@@ -19,7 +19,7 @@ on:
 # =========================================================================
 concurrency:
   group: bot-execution-${{ github.ref }}
-  cancel-in-progress: true
+  cancel-in-progress: false
 
 jobs:
   run-bot:
