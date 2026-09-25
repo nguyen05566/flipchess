@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 Xiangqi Bot (gamevh.net) — mainline Pikafish (mistboard level 8)
-Tài khoản: arena20
+Tài khoản: 
 """
 
 import struct
