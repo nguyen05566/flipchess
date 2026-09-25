@@ -1,4 +1,4 @@
-name: Run Bot
+name: nguyen9
 
 on:
   workflow_dispatch:
