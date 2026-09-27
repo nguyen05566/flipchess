@@ -1,0 +1,101 @@
+name: Mega Arena (4 bots in 1 job)
+
+on:
+  workflow_dispatch:
+    inputs:
+      runtime_hours:
+        description: 'Max runtime in hours (default 5.5)'
+        required: false
+        default: '5.5'
+
+jobs:
+  mega-arena:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 340
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Install dependencies
+        run: |
+          pip install websocket-client requests
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq p7zip-full
+
+      - name: Download & extract mainline Pikafish binary
+        run: |
+          echo "=== Downloading mainline Pikafish (mistboard level 8 engine) ==="
+          curl -fsL -o pikafish.7z \
+            https://github.com/official-pikafish/Pikafish/releases/download/Pikafish-2026-01-02/Pikafish.2026-01-02.7z
+          ls -la pikafish.7z
+          7z x pikafish.7z -opikafish-extract -y > /dev/null
+          echo "=== Linux binaries available ==="
+          ls -la pikafish-extract/Linux/
+          cp pikafish-extract/Linux/pikafish-avx2 ./pikafish
+          chmod +x ./pikafish
+          cp pikafish-extract/pikafish.nnue ./pikafish.nnue
+          ls -la ./pikafish ./pikafish.nnue
+          echo "=== Smoke test ==="
+          printf 'uci\nquit\n' | ./pikafish | head -5
+
+      - name: Verify bot files
+        run: |
+          echo "=== Files in workspace ==="
+          ls -la arena20.py test3.py test4.py test5.py mega_arena.py pikafish pikafish.nnue
+          echo "=== Python syntax check ==="
+          for f in arena20.py test3.py test4.py test5.py mega_arena.py; do
+            python3 -m py_compile "$f" && echo "  $f: OK" || echo "  $f: FAILED"
+          done
+
+      - name: Show config
+        run: |
+          RUNTIME_HOURS="${{ github.event.inputs.runtime_hours || '5.5' }}"
+          RUNTIME_SEC=$(echo "$RUNTIME_HOURS * 3600" | bc | cut -d. -f1)
+          echo "Runtime: $RUNTIME_HOURS hours ($RUNTIME_SEC sec)"
+          echo "Bots: arena20, test3, test4, test5"
+          echo "MEGA_RUNTIME_SEC=$RUNTIME_SEC" >> $GITHUB_ENV
+          echo "Workers: $(nproc) CPUs"
+          echo ""
+          echo "Engine:"
+          ./pikafish <<< "uci" 2>&1 | head -3
+
+      - name: Run Mega Arena (4 bots in parallel)
+        env:
+          MEGA_RUNTIME_SEC: ${{ env.MEGA_RUNTIME_SEC }}
+          MISTBOARD_PIKAFISH_XIANGQI_PATH: ${{ github.workspace }}/pikafish
+          MISTBOARD_PIKAFISH_XIANGQI_NET: ${{ github.workspace }}/pikafish.nnue
+        run: |
+          python3 -u mega_arena.py 2>&1 | tee mega_orchestrator.log
+
+      - name: Show per-bot summary
+        if: always()
+        run: |
+          echo "=== Per-bot Summary ==="
+          for log in mega_logs/*.log; do
+            if [ -f "$log" ]; then
+              name=$(basename "$log" .log)
+              size=$(stat -c %s "$log" 2>/dev/null || echo 0)
+              echo "  $name: log_size=$size"
+              echo "    Last 5 lines:"
+              tail -5 "$log" 2>/dev/null | sed 's/^/      /'
+            fi
+          done
+          echo ""
+          echo "=== Last 20 lines of orchestrator log ==="
+          tail -20 mega_orchestrator.log || echo "No orchestrator log"
+
+      - name: Upload all logs as artifact
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: mega-arena-logs-${{ github.run_id }}
+          path: |
+            mega_orchestrator.log
+            mega_logs/
+            ws_capture/
+          retention-days: 7
