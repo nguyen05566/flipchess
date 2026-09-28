@@ -7,6 +7,12 @@ on:
         description: 'Max runtime in hours (default 5.5)'
         required: false
         default: '5.5'
+  schedule:
+    - cron: '0 */6 * * *'   # mỗi 6 giờ (giờ UTC)
+
+concurrency:
+  group: mega-arena
+  cancel-in-progress: false
 
 jobs:
   mega-arena:
@@ -29,7 +35,7 @@ jobs:
 
       - name: Download & extract mainline Pikafish binary
         run: |
-          echo "=== Downloading mainline Pikafish (mistboard level 8 engine) ==="
+          echo "=== Downloading mainline Pikafish ==="
           curl -fsL -o pikafish.7z \
             https://github.com/official-pikafish/Pikafish/releases/download/Pikafish-2026-01-02/Pikafish.2026-01-02.7z
           ls -la pikafish.7z
@@ -54,7 +60,7 @@ jobs:
 
       - name: Show config
         run: |
-          RUNTIME_HOURS="${{ github.event.inputs.runtime_hours || '5.5' }}"
+          RUNTIME_HOURS="${{ inputs.runtime_hours || '5.5' }}"
           RUNTIME_SEC=$(echo "$RUNTIME_HOURS * 3600" | bc | cut -d. -f1)
           echo "Runtime: $RUNTIME_HOURS hours ($RUNTIME_SEC sec)"
           echo "Bots: arena20, test3, test4, test5"
