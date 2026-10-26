@@ -19,7 +19,7 @@ import json
 import random
 
 # ==================== TÀI KHOẢN (KHÔNG CẦN COOKIE) ====================
-CARO_USER_DIRECT = "nguyen9"
+CARO_USER_DIRECT = "nguyen10"
 CARO_PASSWD_DIRECT = "nhat123456"
 
 def _clean_env(val, default):
