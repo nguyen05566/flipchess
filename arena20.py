@@ -19,7 +19,7 @@ import json
 import random
 
 # ==================== TÀI KHOẢN (KHÔNG CẦN COOKIE) ====================
-CARO_USER_DIRECT = "arena20"
+CARO_USER_DIRECT = "nhat1"
 CARO_PASSWD_DIRECT = "nhat123456"
 
 def _clean_env(val, default):
@@ -68,7 +68,7 @@ KICK_DELAY = 5.0
 
 # ==================== TẠO BÀN CỐ ĐỊNH 5000 XU ====================
 # ★ CHỈ TẠO BÀN — KHÔNG TÌM BÀN, KHÔNG QUICK_PLAY
-CREATE_BET_VALUE = 1000
+CREATE_BET_VALUE = 5000
 BOT_BET_XU = CREATE_BET_VALUE
 
 # Không dùng QUICK_PLAY nữa
