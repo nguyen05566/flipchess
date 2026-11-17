@@ -599,6 +599,7 @@ class PikafishBot:
         self._banned_moves = set()
         self._last_sent_move = None
         self._play_reject_count = 0
+        self._forced_first_move_done = False
         self._latest_bestmove = None
         self._mate_status = None
         self._mate_regex = re.compile(r"score mate (-?\d+)")
@@ -1349,6 +1350,7 @@ class PikafishBot:
         self._turn_started_at = 0.0
         self._last_play_sent_at = 0.0
         self._played_this_turn = False
+        self._forced_first_move_done = False
         self._reconnect_streak = 0
         self._enter_fail_at = 0.0
         self._sit_alone_since = None
@@ -1576,6 +1578,21 @@ class PikafishBot:
             if not self.engine: return
 
         fen, moves = self.board.get_current_fen()
+
+        # ★ Lượt đi đầu tiên: bắt xe lên mạn (bỏ qua engine)
+        if not self._forced_first_move_done:
+            self._forced_first_move_done = True
+            forced = self._find_forced_rook_advance(fen)
+            if forced:
+                print(f"[FIRST] 🚀 Lượt đi đầu tiên: bắt xe lên mạn {forced} (bỏ qua engine)")
+                try:
+                    source_pos, target_pos = self.board.engine_move_to_pos(forced)
+                    self.send_play(source_pos, target_pos)
+                except Exception as e:
+                    print(f"[FIRST] ❌ Lỗi dịch nước: {e}")
+                return
+            print("[FIRST] ⚠️ Không tìm được nước tiến xe hợp lệ -> để engine tính")
+
         fixed = self.fixed_pawn_positions if self.fixed_pawn_positions else None
         banned = set(self._banned_moves)
 
@@ -1617,6 +1634,39 @@ class PikafishBot:
         color = 'r'
         if encoded_id < 0: encoded_id = -encoded_id; color = 'b'
         return f"{color}{encoded_id >> 3}{'' if (encoded_id & 7) == 0 else (encoded_id & 7)}"
+
+    def _find_forced_rook_advance(self, fen):
+        """Find a legal one-step rook advance for the bot's color.
+
+        Engine move notation: rank digit = game_row, where red's back rank is 0
+        and black's back rank is 9. In the FEN grid, fen_row = 9 - game_row, so
+        red advances by decreasing the FEN row and black advances by increasing it.
+        """
+        board_part = fen.split()[0]
+        grid = []
+        for r in board_part.split('/'):
+            line = []
+            for ch in r:
+                if ch.isdigit(): line.extend(['.'] * int(ch))
+                else: line.append(ch)
+            if len(line) != 9: return None
+            grid.append(line)
+
+        is_red = self.board.is_red
+        rook_char = 'R' if is_red else 'r'
+        step = -1 if is_red else 1  # FEN row direction of a forward rook move
+
+        for row in range(10):
+            for col in range(9):
+                if grid[row][col] != rook_char:
+                    continue
+                nrow = row + step
+                if not (0 <= nrow < 10) or grid[nrow][col] != '.':
+                    continue
+                src_rank = 9 - row
+                tgt_rank = 9 - nrow
+                return f"{chr(97 + col)}{src_rank}{chr(97 + col)}{tgt_rank}"
+        return None
 
     def start_keep_alive(self):
         def keep_alive_loop():
