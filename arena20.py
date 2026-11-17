@@ -53,7 +53,7 @@ _lobby_idx = 0
 PLACE_PATH = LOBBY_LIST[_lobby_idx]
 
 # ==================== ENGINE CONFIG ====================
-ENGINE_MULTIPV = 1
+ENGINE_MULTIPV = 3
 ENGINE_MULTIPV_FIXED_PAWN = 4
 FIXED_PAWN_NO_CAPTURE = True
 
